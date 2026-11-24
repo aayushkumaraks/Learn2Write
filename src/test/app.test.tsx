@@ -7,6 +7,7 @@ import {
   HINDI_CONSONANTS_LIST,
   HINDI_VOWELS_LIST,
 } from '../data/hindi';
+import { THAI_CONSONANTS_LIST } from '../data/thai';
 import { HIRAGANA_LIST, KANJI_LIST, KATAKANA_LIST } from '../data/kana';
 import { detectTouchCapability } from '../hooks/useTouchDetection';
 import { WritingCanvas } from '../components/WritingCanvas';
@@ -69,8 +70,8 @@ describe('Kana dataset completeness', () => {
       ...HINDI_CONSONANTS_LIST,
       ...HINDI_COMBINATIONS_LIST,
     ]) {
-      expect(item.strokes.length).toBeGreaterThan(0);
-      expect(item.numberPositions.length).toBe(item.strokes.length);
+      expect(item.strokes).toHaveLength(0);
+      expect(item.numberPositions).toHaveLength(0);
     }
   });
 });
@@ -447,31 +448,95 @@ describe('Learn2Write App UI flows', () => {
     expect(screen.queryByTestId('mismatch-cross')).not.toBeInTheDocument();
   });
 
-  it('switches between Japanese, Thai, and Hindi via the top-level language select menu', () => {
+  it('validates Thai and Hindi sketches against rendered font glyph without stored strokes', () => {
+    const thaiChar = THAI_CONSONANTS_LIST[0]; // ก
+    expect(thaiChar.strokes).toHaveLength(0);
+
+    // Mock 2D canvas getImageData to simulate a 109x109 font glyph + matching/off-ink user strokes
+    const originalCreateElement = document.createElement.bind(document);
+    const createMockCtx = (isRef: boolean, mode: 'match' | 'mismatch' | 'partial') => {
+      const data = new Uint8ClampedArray(109 * 109 * 4);
+      const setPx = (x: number, y: number) => {
+        const idx = (y * 109 + x) * 4;
+        data[idx + 3] = 255;
+      };
+      if (isRef) {
+        for (let y = 30; y <= 70; y++) setPx(40, y);
+      } else if (mode === 'match') {
+        for (let y = 30; y <= 70; y++) setPx(40, y);
+      } else if (mode === 'partial') {
+        for (let y = 30; y <= 58; y++) setPx(40, y); // ~71% coverage -> still incomplete
+      } else {
+        for (let y = 30; y <= 70; y++) setPx(80, y);
+      }
+      return {
+        clearRect: vi.fn(),
+        fillText: vi.fn(),
+        beginPath: vi.fn(),
+        moveTo: vi.fn(),
+        lineTo: vi.fn(),
+        arc: vi.fn(),
+        fill: vi.fn(),
+        stroke: vi.fn(),
+        getImageData: () => ({ data }),
+      };
+    };
+
+    let mode: 'match' | 'mismatch' | 'partial' = 'match';
+    let callCount = 0;
+    const spy = vi.spyOn(document, 'createElement').mockImplementation(((tag: string) => {
+      if (tag === 'canvas') {
+        const isRef = callCount % 2 === 0;
+        callCount++;
+        return {
+          width: 109,
+          height: 109,
+          getContext: () => createMockCtx(isRef, mode),
+        } as unknown as HTMLCanvasElement;
+      }
+      return originalCreateElement(tag);
+    }) as typeof document.createElement);
+
+    try {
+      const dummyStroke = [
+        {
+          points: [
+            { x: 0.37, y: 0.28, t: 0, pressure: 0.5 },
+            { x: 0.37, y: 0.64, t: 10, pressure: 0.5 },
+          ],
+          pencil: 'brush' as const,
+          size: 'medium' as const,
+          color: '#2B2623',
+        },
+      ];
+
+      mode = 'match';
+      expect(validateDrawnCharacter(dummyStroke, thaiChar).status).toBe('matched');
+
+      mode = 'partial';
+      expect(validateDrawnCharacter(dummyStroke, thaiChar).status).toBe('in-progress');
+
+      mode = 'mismatch';
+      expect(validateDrawnCharacter(dummyStroke, thaiChar).status).toBe('mismatch');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('disables non-Japanese languages in the top-level language select menu', () => {
     renderLoggedInApp('Alice');
 
     const select = screen.getByLabelText('Select language') as HTMLSelectElement;
     expect(select.value).toBe('japanese');
     expect(screen.getByLabelText('Selected character あ')).toBeInTheDocument();
 
+    const thaiOption = select.querySelector('option[value="thai"]') as HTMLOptionElement;
+    const hindiOption = select.querySelector('option[value="hindi"]') as HTMLOptionElement;
+    expect(thaiOption.disabled).toBe(true);
+    expect(hindiOption.disabled).toBe(true);
+
+    // Even if a change event is dispatched, language remains Japanese
     fireEvent.change(select, { target: { value: 'thai' } });
-    expect(select.value).toBe('thai');
-    expect(screen.getByLabelText('Selected character ก')).toBeInTheDocument();
-    expect(screen.getByText('Thai Consonants')).toBeInTheDocument();
-
-    fireEvent.change(select, { target: { value: 'hindi' } });
-    expect(select.value).toBe('hindi');
-    expect(screen.getByLabelText('Selected character अ')).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: /Vowels/i })).toHaveAttribute('aria-selected', 'true');
-
-    fireEvent.click(screen.getByRole('tab', { name: /Consonants/i }));
-    expect(screen.getByLabelText('Selected character क')).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('tab', { name: /Combine/i }));
-    expect(screen.getByLabelText('Selected character श्र')).toBeInTheDocument();
-    expect(screen.getAllByText(/श्\+र = shra/i).length).toBeGreaterThan(0);
-
-    fireEvent.change(select, { target: { value: 'japanese' } });
     expect(select.value).toBe('japanese');
     expect(screen.getByLabelText('Selected character あ')).toBeInTheDocument();
   });
@@ -555,10 +620,9 @@ describe('Offline SPA and durable browser progress storage', () => {
   it('persists practiced characters, resume position, and tool preferences per user across reloads', () => {
     const { unmount } = renderLoggedInApp('Aarav');
 
-    // Change language, Hindi section, character, pencil, grid, and guide speed
-    fireEvent.change(screen.getByLabelText('Select language'), { target: { value: 'hindi' } });
-    fireEvent.click(screen.getByRole('tab', { name: /Consonants/i }));
-    fireEvent.click(screen.getByRole('button', { name: /ख \(kha\)/i }));
+    // Change Japanese script, character, pencil, grid, and guide speed
+    fireEvent.click(screen.getByRole('tab', { name: /Katakana/i }));
+    fireEvent.click(screen.getByRole('button', { name: /カ \(ka\)/i }));
     fireEvent.click(screen.getByRole('radio', { name: /Felt Marker/i }));
     fireEvent.click(screen.getByRole('button', { name: /Cross Grid/i }));
     fireEvent.click(screen.getByRole('button', { name: /Normal/i }));
@@ -581,14 +645,14 @@ describe('Offline SPA and durable browser progress storage', () => {
       y: 0,
       toJSON: () => {},
     });
-    const kha = HINDI_CONSONANTS_LIST.find((c) => c.char === 'ख')!;
-    for (let i = 0; i < kha.strokes.length; i++) {
+    const ka = KATAKANA_LIST.find((c) => c.char === 'カ')!;
+    for (let i = 0; i < ka.strokes.length; i++) {
       fireEvent.mouseDown(canvas, { button: 0, clientX: 20, clientY: 20 + i * 10 });
       fireEvent.mouseMove(canvas, { clientX: 80, clientY: 20 + i * 10 });
       fireEvent.mouseUp(canvas);
     }
 
-    expect(localStorage.getItem(USER_STORE_STORAGE_KEY)).toContain('ख');
+    expect(localStorage.getItem(USER_STORE_STORAGE_KEY)).toContain('カ');
 
     // Simulate closing and reopening the browser (sessionStorage cleared, localStorage kept)
     unmount();
@@ -597,19 +661,19 @@ describe('Offline SPA and durable browser progress storage', () => {
 
     // Automatically stays logged in as Aarav without re-prompting for User name
     expect(screen.queryByLabelText(/^User name$/i)).not.toBeInTheDocument();
-    expect((screen.getByLabelText('Select language') as HTMLSelectElement).value).toBe('hindi');
-    expect(screen.getByRole('tab', { name: /Consonants/i })).toHaveAttribute(
+    expect((screen.getByLabelText('Select language') as HTMLSelectElement).value).toBe('japanese');
+    expect(screen.getByRole('tab', { name: /Katakana/i })).toHaveAttribute(
       'aria-selected',
       'true'
     );
-    expect(screen.getByLabelText('Selected character ख')).toBeInTheDocument();
+    expect(screen.getByLabelText('Selected character カ')).toBeInTheDocument();
     expect(screen.getByRole('radio', { name: /Felt Marker/i })).toHaveAttribute(
       'aria-checked',
       'true'
     );
     expect(screen.getByRole('button', { name: /Fine Grid/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Slow/i })).toBeInTheDocument();
-    expect(screen.getByText(/1 \/ 36 practiced/i)).toBeInTheDocument();
+    expect(screen.getByText(/1 \/ 46 practiced/i)).toBeInTheDocument();
     expect(screen.getByTestId('storage-status')).toHaveTextContent('Aarav');
     expect(screen.getByTestId('storage-status')).toHaveTextContent('1 /');
   });
@@ -673,26 +737,24 @@ describe('Offline SPA and durable browser progress storage', () => {
   });
 
   it('shows language-wise and user-wise progress and accuracy on the Profile page', () => {
-    // Seed two local users with distinct multi-language progress and accuracy
+    // Seed two local users with distinct Japanese progress and accuracy
     let store = createEmptyUsersStore(0);
     const aliceLogin = loginWithUserName(store, 'Alice', 100)!;
     store = aliceLogin.store;
-    // Alice: 2 Japanese attempts (1 matched = 50% accuracy), 1 Thai matched (100% accuracy)
+    // Alice: 2 Japanese attempts (1 matched = 50% accuracy)
     store = updateUserProgressInStore(store, 'alice', (prev) => {
       let next = recordCharacterPractice(prev, 'あ', { now: 110 });
       next = recordCharacterPractice(next, 'あ', { matched: true, now: 111 });
       next = recordCharacterPractice(next, 'い', { now: 112 }); // mismatch / non-matched attempt
-      next = recordCharacterPractice(next, 'ก', { now: 113 });
-      next = recordCharacterPractice(next, 'ก', { matched: true, now: 114 });
       return next;
     });
 
     const bobLogin = loginWithUserName(store, 'Bob', 200)!;
     store = bobLogin.store;
-    // Bob: 1 Hindi character practiced and matched (100% accuracy)
+    // Bob: 1 Japanese character practiced and matched (100% accuracy)
     store = updateUserProgressInStore(store, 'bob', (prev) => {
-      let next = recordCharacterPractice(prev, 'अ', { now: 210 });
-      next = recordCharacterPractice(next, 'अ', { matched: true, now: 211 });
+      let next = recordCharacterPractice(prev, 'ア', { now: 210 });
+      next = recordCharacterPractice(next, 'ア', { matched: true, now: 211 });
       return next;
     });
 
@@ -702,41 +764,38 @@ describe('Offline SPA and durable browser progress storage', () => {
 
     // Verify pure analytics helper
     const aliceStats = computeUserStats(store.users.alice);
-    expect(aliceStats.practicedChars).toBe(3);
-    expect(aliceStats.attempts).toBe(3);
-    expect(aliceStats.matches).toBe(2);
-    expect(aliceStats.accuracyPct).toBe(67);
+    expect(aliceStats.practicedChars).toBe(2);
+    expect(aliceStats.attempts).toBe(2);
+    expect(aliceStats.matches).toBe(1);
+    expect(aliceStats.accuracyPct).toBe(50);
     expect(aliceStats.languages.find((l) => l.language === 'japanese')?.accuracyPct).toBe(50);
-    expect(aliceStats.languages.find((l) => l.language === 'thai')?.accuracyPct).toBe(100);
-    expect(aliceStats.languages.find((l) => l.language === 'hindi')?.accuracyPct).toBeNull();
 
     // Open Profile page in App
     render(<App />);
     fireEvent.click(screen.getByRole('button', { name: /^Profile$/i }));
 
     expect(screen.getByRole('heading', { name: 'Alice' })).toBeInTheDocument();
-    expect(screen.getByTestId('profile-kpi-accuracy')).toHaveTextContent('67%');
-    expect(screen.getByTestId('profile-kpi-progress')).toHaveTextContent('3 /');
+    expect(screen.getByTestId('profile-kpi-accuracy')).toHaveTextContent('50%');
+    expect(screen.getByTestId('profile-kpi-progress')).toHaveTextContent('2 /');
 
-    // Language-wise cards
+    // Language-wise cards (Japanese only)
     expect(screen.getByTestId('lang-card-japanese')).toHaveTextContent('2 / 137 practiced');
     expect(screen.getByTestId('lang-card-japanese')).toHaveTextContent('50%');
-    expect(screen.getByTestId('lang-card-thai')).toHaveTextContent('1 / 44 practiced');
-    expect(screen.getByTestId('lang-card-thai')).toHaveTextContent('100%');
-    expect(screen.getByTestId('lang-card-hindi')).toHaveTextContent('0 / 73 practiced');
+    expect(screen.queryByTestId('lang-card-thai')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('lang-card-hindi')).not.toBeInTheDocument();
 
     // User-wise comparison table lists both Alice and Bob with their accuracy
     const table = screen.getByTestId('user-stats-table');
     expect(table).toHaveTextContent('Alice');
     expect(table).toHaveTextContent('Bob');
     expect(screen.getByTestId('user-stats-row-bob')).toHaveTextContent('100%');
-    expect(screen.getByTestId('user-stats-row-bob')).toHaveTextContent('1/73');
+    expect(screen.getByTestId('user-stats-row-bob')).toHaveTextContent('1/137');
 
     // Clicking Bob in the table switches active user to Bob and updates Profile cards
     fireEvent.click(screen.getByTestId('user-stats-row-bob').querySelector('button')!);
     expect(screen.getByRole('heading', { name: 'Bob' })).toBeInTheDocument();
     expect(screen.getByTestId('profile-kpi-accuracy')).toHaveTextContent('100%');
-    expect(screen.getByTestId('lang-card-hindi')).toHaveTextContent('1 / 73 practiced');
+    expect(screen.getByTestId('lang-card-japanese')).toHaveTextContent('1 / 137 practiced');
 
     // Clicking a script row jumps directly back into Practice view for that script
     fireEvent.click(screen.getByTitle('Practice Japanese Katakana'));

@@ -77,6 +77,8 @@ const TOTAL_CHARACTER_COUNT =
 
 const FALLBACK_PROGRESS = createDefaultProgressData(0);
 
+const ENABLED_LANGUAGES: ReadonlySet<WritingLanguage> = new Set(['japanese']);
+
 function isSmallViewport(): boolean {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
     return false;
@@ -113,7 +115,10 @@ export function App() {
   const currentUser = currentUserId ? (usersStore.users[currentUserId] ?? null) : null;
   const progress = currentUser?.progress ?? FALLBACK_PROGRESS;
 
-  const { language, script, hindiScript, selectedChar } = progress.resume;
+  const { script, hindiScript, selectedChar } = progress.resume;
+  const language: WritingLanguage = ENABLED_LANGUAGES.has(progress.resume.language)
+    ? progress.resume.language
+    : 'japanese';
   const { pencil, strokeSize, inkColor, gridStyle, showTrace, showNumbers, guideSpeed } =
     progress.preferences;
 
@@ -323,6 +328,7 @@ export function App() {
 
   const handlePracticeScript = useCallback(
     (nextLang: WritingLanguage, nextScript: KanaScript, nextHindiScript?: HindiScript) => {
+      if (!ENABLED_LANGUAGES.has(nextLang)) return;
       updateCurrentUserProgress((prev) => {
         const resolvedHindi = nextHindiScript ?? prev.resume.hindiScript;
         const resolvedScript =
@@ -383,7 +389,7 @@ export function App() {
 
   const handleLanguageChange = useCallback(
     (nextLang: WritingLanguage) => {
-      if (nextLang === language) return;
+      if (!ENABLED_LANGUAGES.has(nextLang) || nextLang === language) return;
       updateCurrentUserProgress((prev) => {
         const nextScript =
           nextLang === 'japanese' &&
@@ -552,6 +558,13 @@ export function App() {
     [updateCurrentUserProgress]
   );
 
+  // Mark font-validated characters (Thai/Hindi) as practiced as soon as their sketch matches
+  useEffect(() => {
+    if (selected.strokes.length === 0 && validation.isMatch) {
+      handleUserPracticed(selected.char);
+    }
+  }, [selected.strokes.length, selected.char, validation.isMatch, handleUserPracticed]);
+
   const handleToggleInputMode = useCallback(() => {
     const next = activeInputMode === 'touch' ? 'mouse' : 'touch';
     setManualMode(next);
@@ -653,8 +666,12 @@ export function App() {
               onChange={(e) => handleLanguageChange(e.target.value as WritingLanguage)}
             >
               <option value="japanese">Japanese</option>
-              <option value="thai">Thai</option>
-              <option value="hindi">Hindi</option>
+              <option value="thai" disabled>
+                Thai (Disabled)
+              </option>
+              <option value="hindi" disabled>
+                Hindi (Disabled)
+              </option>
             </select>
           </div>
 
@@ -734,9 +751,13 @@ export function App() {
                   </span>
                 </div>
                 <p className="stroke-count-label">
-                  {strokes.length > 0
-                    ? `${strokes.length} / ${selected.strokes.length} ${selected.strokes.length === 1 ? 'stroke' : 'strokes'}`
-                    : `${selected.strokes.length} ${selected.strokes.length === 1 ? 'stroke' : 'strokes'}`}
+                  {selected.strokes.length === 0
+                    ? strokes.length > 0
+                      ? `${strokes.length} ${strokes.length === 1 ? 'stroke' : 'strokes'} drawn`
+                      : 'Font trace guide'
+                    : strokes.length > 0
+                      ? `${strokes.length} / ${selected.strokes.length} ${selected.strokes.length === 1 ? 'stroke' : 'strokes'}`
+                      : `${selected.strokes.length} ${selected.strokes.length === 1 ? 'stroke' : 'strokes'}`}
                 </p>
               </div>
             </div>
@@ -773,16 +794,29 @@ export function App() {
                 type="button"
                 className="guide-play-btn"
                 onClick={handleTogglePlay}
+                disabled={selected.strokes.length === 0}
                 aria-label={isGuidePlaying ? 'Pause guide animation' : 'Play guide animation'}
+                title={
+                  selected.strokes.length === 0
+                    ? 'Font trace guide active (no stroke-order animation)'
+                    : undefined
+                }
               >
-                {isGuidePlaying ? <Pause size={15} /> : <Play size={15} />}
-                <span>{isGuidePlaying ? 'Pause Guide' : 'Play Guide'}</span>
+                {isGuidePlaying && selected.strokes.length > 0 ? (
+                  <Pause size={15} />
+                ) : (
+                  <Play size={15} />
+                )}
+                <span>
+                  {isGuidePlaying && selected.strokes.length > 0 ? 'Pause Guide' : 'Play Guide'}
+                </span>
               </button>
 
               <button
                 type="button"
                 className="guide-secondary-btn"
                 onClick={handleReplayGuide}
+                disabled={selected.strokes.length === 0}
                 title="Replay full stroke order animation"
               >
                 <RotateCcw size={14} />
@@ -801,24 +835,26 @@ export function App() {
             </div>
 
             {/* Individual stroke step pills */}
-            <div className="stroke-pills" aria-label="Play individual stroke">
-              <span className="stroke-pills-label">Stroke:</span>
-              {selected.strokes.map((_, idx) => {
-                const isActive =
-                  (isGuidePlaying && activeGuideStroke === idx) || focusedStroke === idx;
-                return (
-                  <button
-                    key={`${selected.unicode}-pill-${idx}`}
-                    type="button"
-                    className={`stroke-pill ${isActive ? 'is-active' : ''}`}
-                    onClick={() => handlePlaySingleStroke(idx)}
-                    title={`Play stroke ${idx + 1}`}
-                  >
-                    {idx + 1}
-                  </button>
-                );
-              })}
-            </div>
+            {selected.strokes.length > 0 && (
+              <div className="stroke-pills" aria-label="Play individual stroke">
+                <span className="stroke-pills-label">Stroke:</span>
+                {selected.strokes.map((_, idx) => {
+                  const isActive =
+                    (isGuidePlaying && activeGuideStroke === idx) || focusedStroke === idx;
+                  return (
+                    <button
+                      key={`${selected.unicode}-pill-${idx}`}
+                      type="button"
+                      className={`stroke-pill ${isActive ? 'is-active' : ''}`}
+                      onClick={() => handlePlaySingleStroke(idx)}
+                      title={`Play stroke ${idx + 1}`}
+                    >
+                      {idx + 1}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           {/* Interactive Grid Writing Canvas */}

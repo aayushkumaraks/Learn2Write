@@ -45,8 +45,14 @@ export function StrokeGuideOverlay({
   pathRefs.current.length = character.strokes.length;
   pathLengthsRef.current.length = character.strokes.length;
 
+  const hasStrokes = character.strokes.length > 0;
+  const fontFamily =
+    character.script === 'thai'
+      ? "'Noto Sans Thai', 'FreeSerif', 'Thonburi', sans-serif"
+      : "'Noto Sans Devanagari', 'FreeSans', 'Kohinoor Devanagari', sans-serif";
+
   useEffect(() => {
-    if (!isPlaying) {
+    if (!isPlaying || !hasStrokes) {
       return;
     }
 
@@ -174,21 +180,36 @@ export function StrokeGuideOverlay({
       {/* Ghost trace layer */}
       {showTrace && (
         <g className="guide-trace-layer">
-          {character.strokes.map((d, idx) => {
-            const isHighlighted = focusedStroke === idx;
-            return (
-              <path
-                key={`trace-${character.unicode}-${idx}`}
-                d={d}
-                fill="none"
-                stroke={isHighlighted ? '#C87A5B' : '#D5C9B8'}
-                strokeWidth={isHighlighted ? 5.6 : 4.8}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                opacity={isHighlighted ? 0.55 : 0.48}
-              />
-            );
-          })}
+          {hasStrokes ? (
+            character.strokes.map((d, idx) => {
+              const isHighlighted = focusedStroke === idx;
+              return (
+                <path
+                  key={`trace-${character.unicode}-${idx}`}
+                  d={d}
+                  fill="none"
+                  stroke={isHighlighted ? '#C87A5B' : '#D5C9B8'}
+                  strokeWidth={isHighlighted ? 5.6 : 4.8}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  opacity={isHighlighted ? 0.55 : 0.48}
+                />
+              );
+            })
+          ) : (
+            <text
+              x="54.5"
+              y="56"
+              textAnchor="middle"
+              dominantBaseline="central"
+              fontSize="74"
+              fill="#D5C9B8"
+              opacity="0.55"
+              fontFamily={fontFamily}
+            >
+              {character.char}
+            </text>
+          )}
         </g>
       )}
 

@@ -261,14 +261,159 @@ function validateSingleStroke(userStroke: DrawnStroke, refSvgPath: string): bool
   );
 }
 
+function getFontFamilyForScript(script: KanaCharacter['script']): string {
+  if (script === 'thai') {
+    return "'Noto Sans Thai', 'FreeSerif', 'Thonburi', sans-serif";
+  }
+  return "'Noto Sans Devanagari', 'FreeSans', 'Kohinoor Devanagari', sans-serif";
+}
+
+function dilateBinary(mask: Uint8Array, size: number, radius: number): Uint8Array {
+  const out = new Uint8Array(size * size);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      if (!mask[y * size + x]) continue;
+      const y0 = Math.max(0, y - radius);
+      const y1 = Math.min(size - 1, y + radius);
+      const x0 = Math.max(0, x - radius);
+      const x1 = Math.min(size - 1, x + radius);
+      for (let ny = y0; ny <= y1; ny++) {
+        for (let nx = x0; nx <= x1; nx++) {
+          if ((nx - x) * (nx - x) + (ny - y) * (ny - y) <= radius * radius) {
+            out[ny * size + nx] = 1;
+          }
+        }
+      }
+    }
+  }
+  return out;
+}
+
 /**
- * Validates user-drawn strokes against a KanaCharacter's KanjiVG stroke order and geometry.
+ * Compares user-drawn strokes against the rendered font glyph on a 109x109 canvas.
+ * Used for scripts without stored stroke-order data (Thai & Hindi) after every sketch.
+ */
+export function validateAgainstFontGlyph(
+  strokes: DrawnStroke[],
+  character: KanaCharacter
+): StrokeValidationResult {
+  if (strokes.length === 0) {
+    return { status: 'idle', isMatch: false, strokeCountMatch: false, matchedStrokes: [] };
+  }
+  if (typeof document === 'undefined') {
+    return { status: 'in-progress', isMatch: false, strokeCountMatch: false, matchedStrokes: [] };
+  }
+
+  const refCanvas = document.createElement('canvas');
+  refCanvas.width = KANJIVG_SIZE;
+  refCanvas.height = KANJIVG_SIZE;
+  const refCtx = refCanvas.getContext('2d');
+
+  const userCanvas = document.createElement('canvas');
+  userCanvas.width = KANJIVG_SIZE;
+  userCanvas.height = KANJIVG_SIZE;
+  const userCtx = userCanvas.getContext('2d');
+
+  if (!refCtx || !userCtx || typeof refCtx.getImageData !== 'function') {
+    return { status: 'in-progress', isMatch: false, strokeCountMatch: false, matchedStrokes: [] };
+  }
+
+  // Render reference font glyph identically to StrokeGuideOverlay
+  refCtx.clearRect(0, 0, KANJIVG_SIZE, KANJIVG_SIZE);
+  refCtx.fillStyle = '#000000';
+  refCtx.textAlign = 'center';
+  refCtx.textBaseline = 'middle';
+  refCtx.font = `74px ${getFontFamilyForScript(character.script)}`;
+  refCtx.fillText(character.char, 54.5, 56);
+
+  // Render user's drawn strokes
+  userCtx.clearRect(0, 0, KANJIVG_SIZE, KANJIVG_SIZE);
+  userCtx.strokeStyle = '#000000';
+  userCtx.fillStyle = '#000000';
+  userCtx.lineCap = 'round';
+  userCtx.lineJoin = 'round';
+  userCtx.lineWidth = 5.5;
+  for (const stroke of strokes) {
+    if (stroke.points.length === 0) continue;
+    userCtx.beginPath();
+    const p0 = stroke.points[0];
+    if (stroke.points.length === 1) {
+      userCtx.arc(p0.x * KANJIVG_SIZE, p0.y * KANJIVG_SIZE, 2.25, 0, Math.PI * 2);
+      userCtx.fill();
+    } else {
+      userCtx.moveTo(p0.x * KANJIVG_SIZE, p0.y * KANJIVG_SIZE);
+      for (let i = 1; i < stroke.points.length; i++) {
+        const p = stroke.points[i];
+        userCtx.lineTo(p.x * KANJIVG_SIZE, p.y * KANJIVG_SIZE);
+      }
+      userCtx.stroke();
+    }
+  }
+
+  const refData = refCtx.getImageData(0, 0, KANJIVG_SIZE, KANJIVG_SIZE).data;
+  const userData = userCtx.getImageData(0, 0, KANJIVG_SIZE, KANJIVG_SIZE).data;
+
+  const totalPixels = KANJIVG_SIZE * KANJIVG_SIZE;
+  const refMask = new Uint8Array(totalPixels);
+  const userMask = new Uint8Array(totalPixels);
+  let refCount = 0;
+  let userCount = 0;
+
+  for (let i = 0; i < totalPixels; i++) {
+    if (refData[i * 4 + 3] > 60) {
+      refMask[i] = 1;
+      refCount++;
+    }
+    if (userData[i * 4 + 3] > 60) {
+      userMask[i] = 1;
+      userCount++;
+    }
+  }
+
+  if (refCount === 0 || userCount === 0) {
+    return { status: 'in-progress', isMatch: false, strokeCountMatch: false, matchedStrokes: [] };
+  }
+
+  const refDilated = dilateBinary(refMask, KANJIVG_SIZE, 3);
+  const userDilated = dilateBinary(userMask, KANJIVG_SIZE, 4);
+
+  let coveredRef = 0;
+  for (let i = 0; i < totalPixels; i++) {
+    if (refMask[i] && userDilated[i]) coveredRef++;
+  }
+
+  let onInkUser = 0;
+  for (let i = 0; i < totalPixels; i++) {
+    if (userMask[i] && refDilated[i]) onInkUser++;
+  }
+
+  const coverage = coveredRef / refCount;
+  const onInk = onInkUser / userCount;
+
+  if (onInk < 0.52) {
+    return { status: 'mismatch', isMatch: false, strokeCountMatch: false, matchedStrokes: [] };
+  }
+
+  if (coverage >= 0.88 && onInk >= 0.6) {
+    return { status: 'matched', isMatch: true, strokeCountMatch: true, matchedStrokes: [] };
+  }
+
+  return { status: 'in-progress', isMatch: false, strokeCountMatch: false, matchedStrokes: [] };
+}
+
+/**
+ * Validates user-drawn strokes against a KanaCharacter's KanjiVG stroke order and geometry,
+ * or against the rendered font glyph when no stroke-order data is stored (Thai & Hindi).
  */
 export function validateDrawnCharacter(
   strokes: DrawnStroke[],
   character: KanaCharacter
 ): StrokeValidationResult {
   const expectedCount = character.strokes.length;
+
+  if (expectedCount === 0) {
+    return validateAgainstFontGlyph(strokes, character);
+  }
 
   if (strokes.length === 0) {
     return {

@@ -1,10 +1,4 @@
-import {
-  HINDI_COMBINATIONS_LIST,
-  HINDI_CONSONANTS_LIST,
-  HINDI_VOWELS_LIST,
-} from '../data/hindi';
 import { HIRAGANA_LIST, KANJI_LIST, KATAKANA_LIST } from '../data/kana';
-import { THAI_CONSONANTS_LIST } from '../data/thai';
 import type { HindiScript, KanaCharacter, KanaScript, WritingLanguage } from '../types/kana';
 import type { PersistedProgressData } from './progressStorage';
 import type { LocalUserProfile } from './userStorage';
@@ -75,51 +69,6 @@ const LANGUAGE_DEFINITIONS: Array<{
       { id: 'hiragana', label: 'Hiragana', sample: 'あ', language: 'japanese', items: HIRAGANA_LIST },
       { id: 'katakana', label: 'Katakana', sample: 'ア', language: 'japanese', items: KATAKANA_LIST },
       { id: 'kanji', label: 'Kanji', sample: '漢', language: 'japanese', items: KANJI_LIST },
-    ],
-  },
-  {
-    language: 'thai',
-    label: 'Thai',
-    sample: 'ก–ฮ',
-    scripts: [
-      {
-        id: 'thai',
-        label: 'Consonants',
-        sample: 'ก',
-        language: 'thai',
-        items: THAI_CONSONANTS_LIST,
-      },
-    ],
-  },
-  {
-    language: 'hindi',
-    label: 'Hindi',
-    sample: 'अ क श्र',
-    scripts: [
-      {
-        id: 'hindi-vowels',
-        label: 'Vowels',
-        sample: 'अ',
-        language: 'hindi',
-        hindiScript: 'hindi-vowels',
-        items: HINDI_VOWELS_LIST,
-      },
-      {
-        id: 'hindi-consonants',
-        label: 'Consonants',
-        sample: 'क',
-        language: 'hindi',
-        hindiScript: 'hindi-consonants',
-        items: HINDI_CONSONANTS_LIST,
-      },
-      {
-        id: 'hindi-combinations',
-        label: 'Combine',
-        sample: 'श्र',
-        language: 'hindi',
-        hindiScript: 'hindi-combinations',
-        items: HINDI_COMBINATIONS_LIST,
-      },
     ],
   },
 ];

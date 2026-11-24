@@ -206,8 +206,6 @@ export function ProfilePage({
                 <th scope="col">Overall Progress</th>
                 <th scope="col">Accuracy</th>
                 <th scope="col">Japanese</th>
-                <th scope="col">Thai</th>
-                <th scope="col">Hindi</th>
               </tr>
             </thead>
             <tbody>
@@ -215,8 +213,6 @@ export function ProfilePage({
                 const isCurrent = u.userId === currentUser.id;
                 const isLive = isCurrent || activeBrowserUserIds.has(u.userId);
                 const jp = u.languages.find((l) => l.language === 'japanese')!;
-                const th = u.languages.find((l) => l.language === 'thai')!;
-                const hi = u.languages.find((l) => l.language === 'hindi')!;
                 return (
                   <tr
                     key={u.userId}
@@ -263,14 +259,6 @@ export function ProfilePage({
                     <td>
                       <span>{jp.practicedChars}/{jp.totalChars}</span>
                       <span className="table-sub-meta"> · {formatAccuracy(jp.accuracyPct)}</span>
-                    </td>
-                    <td>
-                      <span>{th.practicedChars}/{th.totalChars}</span>
-                      <span className="table-sub-meta"> · {formatAccuracy(th.accuracyPct)}</span>
-                    </td>
-                    <td>
-                      <span>{hi.practicedChars}/{hi.totalChars}</span>
-                      <span className="table-sub-meta"> · {formatAccuracy(hi.accuracyPct)}</span>
                     </td>
                   </tr>
                 );
