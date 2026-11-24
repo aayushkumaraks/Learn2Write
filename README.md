@@ -2,6 +2,8 @@
 
 A completely offline, zero-backend React single-page application (SPA) for learning Japanese (**Hiragana**, **Katakana**, **Kanji**), **Thai**, and **Hindi Devanagari** stroke order on touch screens and desktop browsers, ready to host on GitHub Pages.
 
+**Live App:** https://aayushkumaraks.github.io/Learn2Write/
+
 ## Features
 
 - **100% Offline Single-Page App:** All stroke datasets, styles, icons, and system font stacks are bundled locally with zero external runtime network requests. A build-generated Service Worker (`sw.js`) and Web App Manifest (`manifest.webmanifest`) precache the entire app shell so it reloads and runs seamlessly offline.
