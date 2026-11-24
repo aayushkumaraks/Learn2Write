@@ -1,0 +1,913 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ChevronLeft,
+  ChevronRight,
+  Gauge,
+  Hand,
+  MousePointer2,
+  Pause,
+  PenTool,
+  Play,
+  RotateCcw,
+  User,
+} from 'lucide-react';
+import { HindiChart } from './components/HindiChart';
+import { KanaChart } from './components/KanaChart';
+import { LocalUsersBar } from './components/LocalUsersBar';
+import { ProfilePage } from './components/ProfilePage';
+import { ScriptGridPanel } from './components/ScriptGridPanel';
+import { ToolBar } from './components/ToolBar';
+import { ToolDock } from './components/ToolDock';
+import { UserLoginScreen } from './components/UserLoginScreen';
+import { WritingCanvas } from './components/WritingCanvas';
+import {
+  getHindiList,
+  HINDI_COMBINATIONS_LIST,
+  HINDI_CONSONANTS_LIST,
+  HINDI_VOWELS_LIST,
+} from './data/hindi';
+import { getKanaList, HIRAGANA_LIST, KANJI_LIST, KATAKANA_LIST } from './data/kana';
+import { THAI_CONSONANTS_LIST } from './data/thai';
+import { useTouchDetection } from './hooks/useTouchDetection';
+import type {
+  DrawnStroke,
+  GridStyle,
+  HindiScript,
+  KanaCharacter,
+  KanaScript,
+  PencilType,
+  StrokeSize,
+  WritingLanguage,
+} from './types/kana';
+import {
+  createDefaultProgressData,
+  recordCharacterPractice,
+  type PersistedProgressData,
+  type PracticePreferences,
+} from './utils/progressStorage';
+import { validateDrawnCharacter } from './utils/strokeValidator';
+import {
+  createTabId,
+  getActiveBrowserUserIds,
+  getSortedLocalUsers,
+  getTabUserId,
+  heartbeatTabSession,
+  hydrateUsersStoreFromIndexedDB,
+  loadUsersStoreSync,
+  loginWithUserName,
+  logoutUsersStore,
+  mergeUsersStore,
+  removeTabSession,
+  saveUsersStore,
+  setTabUserId,
+  subscribeToActiveSessions,
+  subscribeToUsersStoreUpdates,
+  updateUserProgressInStore,
+  type LocalUsersStore,
+} from './utils/userStorage';
+
+const TOTAL_CHARACTER_COUNT =
+  HIRAGANA_LIST.length +
+  KATAKANA_LIST.length +
+  KANJI_LIST.length +
+  THAI_CONSONANTS_LIST.length +
+  HINDI_VOWELS_LIST.length +
+  HINDI_CONSONANTS_LIST.length +
+  HINDI_COMBINATIONS_LIST.length;
+
+const FALLBACK_PROGRESS = createDefaultProgressData(0);
+
+function isSmallViewport(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+    return false;
+  }
+  return window.matchMedia('(max-width: 1080px)').matches;
+}
+
+function nextTimestamp(prevUpdatedAt: number): number {
+  return Math.max(prevUpdatedAt + 1, Date.now());
+}
+
+export function App() {
+  // Check local user availability on first load (localStorage + sessionStorage per-tab)
+  const [initialState] = useState(() => {
+    const store = loadUsersStoreSync();
+    const savedTabUser = getTabUserId();
+    const resolvedUserId =
+      savedTabUser && store.users[savedTabUser] ? savedTabUser : store.activeUserId;
+    return { store, resolvedUserId };
+  });
+
+  const [usersStore, setUsersStore] = useState<LocalUsersStore>(initialState.store);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(initialState.resolvedUserId);
+  const [activeBrowserUserIds, setActiveBrowserUserIds] = useState<Set<string>>(() =>
+    getActiveBrowserUserIds()
+  );
+
+  const tabIdRef = useRef<string>(createTabId());
+  const usersStoreRef = useRef(usersStore);
+  usersStoreRef.current = usersStore;
+  const currentUserIdRef = useRef(currentUserId);
+  currentUserIdRef.current = currentUserId;
+
+  const currentUser = currentUserId ? (usersStore.users[currentUserId] ?? null) : null;
+  const progress = currentUser?.progress ?? FALLBACK_PROGRESS;
+
+  const { language, script, hindiScript, selectedChar } = progress.resume;
+  const { pencil, strokeSize, inkColor, gridStyle, showTrace, showNumbers, guideSpeed } =
+    progress.preferences;
+
+  const [isToolDockOpen, setIsToolDockOpen] = useState<boolean>(() => !isSmallViewport());
+  const [activeView, setActiveView] = useState<'practice' | 'profile'>('practice');
+
+  // Canvas strokes (ephemeral per active attempt)
+  const [strokes, setStrokes] = useState<DrawnStroke[]>([]);
+
+  // Guide animation state
+  const [isGuidePlaying, setIsGuidePlaying] = useState<boolean>(true);
+  const [guidePlayNonce, setGuidePlayNonce] = useState<number>(0);
+  const [focusedStroke, setFocusedStroke] = useState<number | null>(null);
+  const [activeGuideStroke, setActiveGuideStroke] = useState<number | null>(null);
+
+  // Offline/online status indicator (app works 100% offline in both states)
+  const [isOffline, setIsOffline] = useState<boolean>(() =>
+    typeof navigator !== 'undefined' ? navigator.onLine === false : false
+  );
+
+  // Touch vs Mouse detection
+  const { activeInputMode, isTouchSupported, isManualOverride, setManualMode } =
+    useTouchDetection();
+
+  const currentList = useMemo(() => {
+    if (language === 'thai') return THAI_CONSONANTS_LIST;
+    if (language === 'hindi') return getHindiList(hindiScript);
+    return getKanaList(script);
+  }, [language, script, hindiScript]);
+
+  const selected = useMemo(
+    () => currentList.find((item) => item.char === selectedChar) ?? currentList[0],
+    [currentList, selectedChar]
+  );
+
+  const currentIndex = useMemo(
+    () => Math.max(0, currentList.findIndex((item) => item.char === selected.char)),
+    [currentList, selected]
+  );
+
+  const practicedChars = useMemo(
+    () => new Set(progress.practicedChars),
+    [progress.practicedChars]
+  );
+
+  const localUsers = useMemo(
+    () => getSortedLocalUsers(usersStore, activeBrowserUserIds, currentUser?.id ?? null),
+    [usersStore, activeBrowserUserIds, currentUser?.id]
+  );
+
+  const validation = useMemo(
+    () => validateDrawnCharacter(strokes, selected),
+    [strokes, selected]
+  );
+
+  // Persist users store to both localStorage and IndexedDB
+  useEffect(() => {
+    if (usersStore.updatedAt > 0 || Object.keys(usersStore.users).length > 0) {
+      saveUsersStore(usersStore);
+    }
+  }, [usersStore]);
+
+  // Reconcile with IndexedDB mirror on startup (recovers users & progress if localStorage was cleared/stale)
+  useEffect(() => {
+    let cancelled = false;
+    void hydrateUsersStoreFromIndexedDB(usersStoreRef.current).then((hydrated) => {
+      if (cancelled || !hydrated) return;
+      setUsersStore((prev) => {
+        const reconciled = mergeUsersStore(prev, hydrated);
+        return JSON.stringify(reconciled) === JSON.stringify(prev) ? prev : reconciled;
+      });
+      if (!currentUserIdRef.current && hydrated.activeUserId) {
+        setCurrentUserId(hydrated.activeUserId);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Keep local users & progress synced across open browser tabs
+  useEffect(() => {
+    const unsubUsers = subscribeToUsersStoreUpdates((remote) => {
+      setUsersStore((prev) => {
+        const merged = mergeUsersStore(prev, remote);
+        return JSON.stringify(merged) === JSON.stringify(prev) ? prev : merged;
+      });
+    });
+    const unsubSessions = subscribeToActiveSessions((liveIds) => {
+      setActiveBrowserUserIds(liveIds);
+    });
+    return () => {
+      unsubUsers();
+      unsubSessions();
+    };
+  }, []);
+
+  // Maintain live presence heartbeat for this browser tab
+  useEffect(() => {
+    const tabId = tabIdRef.current;
+    const activeId = currentUser?.id ?? null;
+    setTabUserId(activeId);
+    heartbeatTabSession(tabId, activeId);
+    setActiveBrowserUserIds(getActiveBrowserUserIds());
+
+    if (!activeId) return;
+
+    const timer = window.setInterval(() => {
+      heartbeatTabSession(tabId, activeId);
+      setActiveBrowserUserIds(getActiveBrowserUserIds());
+    }, 10_000);
+
+    const handlePageHide = () => {
+      removeTabSession(tabId);
+    };
+    window.addEventListener('pagehide', handlePageHide);
+    window.addEventListener('beforeunload', handlePageHide);
+
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('pagehide', handlePageHide);
+      window.removeEventListener('beforeunload', handlePageHide);
+    };
+  }, [currentUser?.id]);
+
+  // Clean up tab session on unmount
+  useEffect(() => {
+    const tabId = tabIdRef.current;
+    return () => {
+      removeTabSession(tabId);
+    };
+  }, []);
+
+  // Track browser offline/online connectivity status
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleOnline = () => setIsOffline(false);
+    const handleOffline = () => setIsOffline(true);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  const updateCurrentUserProgress = useCallback(
+    (updater: (prev: PersistedProgressData) => PersistedProgressData) => {
+      const uid = currentUserIdRef.current;
+      if (!uid) return;
+      setUsersStore((prev) => updateUserProgressInStore(prev, uid, updater));
+    },
+    []
+  );
+
+  // Record a matched validation once per completed drawing attempt
+  const matchedAttemptCharRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!currentUser) return;
+    if (strokes.length === 0) {
+      matchedAttemptCharRef.current = null;
+      return;
+    }
+    if (validation.status === 'matched' && matchedAttemptCharRef.current !== selected.char) {
+      matchedAttemptCharRef.current = selected.char;
+      updateCurrentUserProgress((prev) =>
+        recordCharacterPractice(prev, selected.char, {
+          matched: true,
+          now: nextTimestamp(prev.updatedAt),
+        })
+      );
+    }
+  }, [currentUser, validation.status, strokes.length, selected.char, updateCurrentUserProgress]);
+
+  const resetCanvasForCharacter = useCallback(() => {
+    matchedAttemptCharRef.current = null;
+    setStrokes([]);
+    setFocusedStroke(null);
+    setIsGuidePlaying(true);
+    setGuidePlayNonce((n) => n + 1);
+  }, []);
+
+  const handleLogin = useCallback(
+    (rawName: string) => {
+      const result = loginWithUserName(usersStoreRef.current, rawName);
+      if (!result) return;
+      saveUsersStore(result.store);
+      setUsersStore(result.store);
+      setCurrentUserId(result.user.id);
+      resetCanvasForCharacter();
+    },
+    [resetCanvasForCharacter]
+  );
+
+  const handleLogout = useCallback(() => {
+    removeTabSession(tabIdRef.current);
+    setTabUserId(null);
+    const nextStore = logoutUsersStore(usersStoreRef.current);
+    saveUsersStore(nextStore);
+    setUsersStore(nextStore);
+    setCurrentUserId(null);
+    setActiveView('practice');
+    setActiveBrowserUserIds(getActiveBrowserUserIds());
+    matchedAttemptCharRef.current = null;
+    setStrokes([]);
+  }, []);
+
+  const handlePracticeScript = useCallback(
+    (nextLang: WritingLanguage, nextScript: KanaScript, nextHindiScript?: HindiScript) => {
+      updateCurrentUserProgress((prev) => {
+        const resolvedHindi = nextHindiScript ?? prev.resume.hindiScript;
+        const resolvedScript =
+          nextLang === 'japanese' ? nextScript : prev.resume.script;
+        const nextList =
+          nextLang === 'thai'
+            ? THAI_CONSONANTS_LIST
+            : nextLang === 'hindi'
+              ? getHindiList(resolvedHindi)
+              : getKanaList(resolvedScript);
+        return {
+          ...prev,
+          updatedAt: nextTimestamp(prev.updatedAt),
+          resume: {
+            ...prev.resume,
+            language: nextLang,
+            script: resolvedScript,
+            hindiScript: resolvedHindi,
+            selectedChar: nextList[0].char,
+          },
+        };
+      });
+      resetCanvasForCharacter();
+      setActiveView('practice');
+    },
+    [updateCurrentUserProgress, resetCanvasForCharacter]
+  );
+
+  const updatePreferences = useCallback(
+    (updater: (prev: PracticePreferences) => PracticePreferences) => {
+      updateCurrentUserProgress((prev) => {
+        const nextPrefs = updater(prev.preferences);
+        if (nextPrefs === prev.preferences) return prev;
+        return {
+          ...prev,
+          updatedAt: nextTimestamp(prev.updatedAt),
+          preferences: nextPrefs,
+        };
+      });
+    },
+    [updateCurrentUserProgress]
+  );
+
+  const selectCharacter = useCallback(
+    (kana: KanaCharacter) => {
+      updateCurrentUserProgress((prev) => ({
+        ...prev,
+        updatedAt: nextTimestamp(prev.updatedAt),
+        resume: {
+          ...prev.resume,
+          selectedChar: kana.char,
+        },
+      }));
+      resetCanvasForCharacter();
+    },
+    [updateCurrentUserProgress, resetCanvasForCharacter]
+  );
+
+  const handleLanguageChange = useCallback(
+    (nextLang: WritingLanguage) => {
+      if (nextLang === language) return;
+      updateCurrentUserProgress((prev) => {
+        const nextScript =
+          nextLang === 'japanese' &&
+          (prev.resume.script === 'thai' || prev.resume.script.startsWith('hindi'))
+            ? 'hiragana'
+            : prev.resume.script;
+        const nextList =
+          nextLang === 'thai'
+            ? THAI_CONSONANTS_LIST
+            : nextLang === 'hindi'
+              ? getHindiList(prev.resume.hindiScript)
+              : getKanaList(nextScript);
+        return {
+          ...prev,
+          updatedAt: nextTimestamp(prev.updatedAt),
+          resume: {
+            ...prev.resume,
+            language: nextLang,
+            script: nextScript,
+            selectedChar: nextList[0].char,
+          },
+        };
+      });
+      resetCanvasForCharacter();
+    },
+    [language, updateCurrentUserProgress, resetCanvasForCharacter]
+  );
+
+  const handleHindiScriptChange = useCallback(
+    (nextScript: HindiScript) => {
+      if (nextScript === hindiScript) return;
+      const nextList = getHindiList(nextScript);
+      updateCurrentUserProgress((prev) => ({
+        ...prev,
+        updatedAt: nextTimestamp(prev.updatedAt),
+        resume: {
+          ...prev.resume,
+          hindiScript: nextScript,
+          selectedChar: nextList[0].char,
+        },
+      }));
+      resetCanvasForCharacter();
+    },
+    [hindiScript, updateCurrentUserProgress, resetCanvasForCharacter]
+  );
+
+  const handleScriptChange = useCallback(
+    (nextScript: KanaScript) => {
+      if (nextScript === script) return;
+      const nextList = getKanaList(nextScript);
+      // Try to match the same romaji in the other script (e.g. あ -> ア)
+      const match = nextList.find((item) => item.romaji === selected.romaji) ?? nextList[0];
+      updateCurrentUserProgress((prev) => ({
+        ...prev,
+        updatedAt: nextTimestamp(prev.updatedAt),
+        resume: {
+          ...prev.resume,
+          script: nextScript,
+          selectedChar: match.char,
+        },
+      }));
+      resetCanvasForCharacter();
+    },
+    [script, selected.romaji, updateCurrentUserProgress, resetCanvasForCharacter]
+  );
+
+  const handleStepCharacter = useCallback(
+    (delta: number) => {
+      const nextIdx = (currentIndex + delta + currentList.length) % currentList.length;
+      selectCharacter(currentList[nextIdx]);
+    },
+    [currentIndex, currentList, selectCharacter]
+  );
+
+  const handleReplayGuide = useCallback(() => {
+    setFocusedStroke(null);
+    setIsGuidePlaying(true);
+    setGuidePlayNonce((n) => n + 1);
+  }, []);
+
+  const handleTogglePlay = useCallback(() => {
+    if (isGuidePlaying) {
+      setIsGuidePlaying(false);
+    } else {
+      setFocusedStroke(null);
+      setIsGuidePlaying(true);
+      setGuidePlayNonce((n) => n + 1);
+    }
+  }, [isGuidePlaying]);
+
+  const handlePlaySingleStroke = useCallback((strokeIdx: number) => {
+    setFocusedStroke(strokeIdx);
+    setIsGuidePlaying(true);
+    setGuidePlayNonce((n) => n + 1);
+  }, []);
+
+  const handleGuideComplete = useCallback(() => {
+    setIsGuidePlaying(false);
+  }, []);
+
+  const handlePencilChange = useCallback(
+    (nextPencil: PencilType) => {
+      updatePreferences((prev) => ({ ...prev, pencil: nextPencil }));
+    },
+    [updatePreferences]
+  );
+
+  const handleStrokeSizeChange = useCallback(
+    (nextSize: StrokeSize) => {
+      updatePreferences((prev) => ({ ...prev, strokeSize: nextSize }));
+    },
+    [updatePreferences]
+  );
+
+  const handleInkColorChange = useCallback(
+    (nextColor: string) => {
+      updatePreferences((prev) => ({ ...prev, inkColor: nextColor }));
+    },
+    [updatePreferences]
+  );
+
+  const handleCycleGrid = useCallback(() => {
+    updatePreferences((prev) => {
+      const nextGrid: GridStyle =
+        prev.gridStyle === 'crosshair'
+          ? 'quad'
+          : prev.gridStyle === 'quad'
+            ? 'none'
+            : 'crosshair';
+      return { ...prev, gridStyle: nextGrid };
+    });
+  }, [updatePreferences]);
+
+  const handleToggleTrace = useCallback(() => {
+    updatePreferences((prev) => ({ ...prev, showTrace: !prev.showTrace }));
+  }, [updatePreferences]);
+
+  const handleToggleNumbers = useCallback(() => {
+    updatePreferences((prev) => ({ ...prev, showNumbers: !prev.showNumbers }));
+  }, [updatePreferences]);
+
+  const handleToggleGuideSpeed = useCallback(() => {
+    updatePreferences((prev) => ({
+      ...prev,
+      guideSpeed: prev.guideSpeed === 'normal' ? 'slow' : 'normal',
+    }));
+  }, [updatePreferences]);
+
+  const handleUndo = useCallback(() => {
+    setStrokes((prev) => prev.slice(0, -1));
+  }, []);
+
+  const handleClear = useCallback(() => {
+    matchedAttemptCharRef.current = null;
+    setStrokes([]);
+  }, []);
+
+  const handleUserPracticed = useCallback(
+    (char: string) => {
+      updateCurrentUserProgress((prev) =>
+        recordCharacterPractice(prev, char, {
+          now: nextTimestamp(prev.updatedAt),
+        })
+      );
+    },
+    [updateCurrentUserProgress]
+  );
+
+  const handleToggleInputMode = useCallback(() => {
+    const next = activeInputMode === 'touch' ? 'mouse' : 'touch';
+    setManualMode(next);
+  }, [activeInputMode, setManualMode]);
+
+  // Keyboard shortcuts for desktop convenience (only in practice view when logged in)
+  useEffect(() => {
+    if (!currentUser || activeView !== 'practice') return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        e.target instanceof HTMLSelectElement
+      ) {
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        handleUndo();
+      } else if (e.key === 'ArrowRight') {
+        handleStepCharacter(1);
+      } else if (e.key === 'ArrowLeft') {
+        handleStepCharacter(-1);
+      } else if (
+        (e.code === 'Space' || e.key === ' ') &&
+        !(e.target instanceof HTMLButtonElement)
+      ) {
+        e.preventDefault();
+        handleReplayGuide();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [currentUser, activeView, handleUndo, handleStepCharacter, handleReplayGuide]);
+
+  // First load / logged-out check: ask only for User name and show existing local browser users
+  if (!currentUser) {
+    return (
+      <UserLoginScreen
+        localUsers={localUsers}
+        activeBrowserUserIds={activeBrowserUserIds}
+        totalCharacters={TOTAL_CHARACTER_COUNT}
+        onLogin={handleLogin}
+      />
+    );
+  }
+
+  return (
+    <div className="app-shell">
+      {/* Minimal top bar */}
+      <header className="app-header">
+        <div className="brand">
+          <span className="brand-mark" aria-hidden="true">
+            書
+          </span>
+          <div>
+            <h1 className="brand-title">Learn2Write</h1>
+            <p className="brand-subtitle">
+              {language === 'thai'
+                ? 'Thai Script Stroke Practice'
+                : language === 'hindi'
+                  ? 'Hindi Devanagari Stroke Practice'
+                  : 'Japanese Kana Stroke Practice'}
+            </p>
+          </div>
+        </div>
+
+        <div className="header-right">
+          <nav className="view-nav" aria-label="Workspace view">
+            <button
+              type="button"
+              className={`view-nav-btn ${activeView === 'practice' ? 'is-active' : ''}`}
+              onClick={() => setActiveView('practice')}
+              aria-current={activeView === 'practice' ? 'page' : undefined}
+            >
+              <PenTool size={14} />
+              <span>Practice</span>
+            </button>
+            <button
+              type="button"
+              className={`view-nav-btn ${activeView === 'profile' ? 'is-active' : ''}`}
+              onClick={() => setActiveView('profile')}
+              aria-current={activeView === 'profile' ? 'page' : undefined}
+            >
+              <User size={14} />
+              <span>Profile</span>
+            </button>
+          </nav>
+
+          <div className="language-select-wrap">
+            <label htmlFor="language-select" className="sr-only">
+              Select language
+            </label>
+            <select
+              id="language-select"
+              className="language-select"
+              aria-label="Select language"
+              value={language}
+              onChange={(e) => handleLanguageChange(e.target.value as WritingLanguage)}
+            >
+              <option value="japanese">Japanese</option>
+              <option value="thai">Thai</option>
+              <option value="hindi">Hindi</option>
+            </select>
+          </div>
+
+          <button
+            type="button"
+            className={`input-mode-pill ${activeInputMode === 'touch' ? 'is-touch' : 'is-mouse'}`}
+            onClick={handleToggleInputMode}
+            title={
+              isManualOverride
+                ? `Input mode manually set to ${activeInputMode}. Click to switch.`
+                : `Auto-detected ${isTouchSupported ? 'touch screen' : 'mouse'} input (${activeInputMode} listeners active). Click to switch.`
+            }
+            data-testid="input-mode-badge"
+          >
+            {activeInputMode === 'touch' ? <Hand size={14} /> : <MousePointer2 size={14} />}
+            <span>{activeInputMode === 'touch' ? 'Touch Mode' : 'Mouse Mode'}</span>
+          </button>
+        </div>
+      </header>
+
+      {/* Local browser users bar (lists all local users, switch by name, logout) */}
+      <LocalUsersBar
+        currentUser={currentUser}
+        localUsers={localUsers}
+        activeBrowserUserIds={activeBrowserUserIds}
+        onSwitchUser={handleLogin}
+        onLogout={handleLogout}
+      />
+
+      {/* Main view: Practice workspace or Profile analytics page */}
+      {activeView === 'profile' ? (
+        <ProfilePage
+          currentUser={currentUser}
+          localUsers={localUsers}
+          activeBrowserUserIds={activeBrowserUserIds}
+          onBackToPractice={() => setActiveView('practice')}
+          onPracticeScript={handlePracticeScript}
+          onSwitchUser={handleLogin}
+        />
+      ) : (
+        <main className="workspace">
+        <ToolDock
+          pencil={pencil}
+          onPencilChange={handlePencilChange}
+          strokeSize={strokeSize}
+          onStrokeSizeChange={handleStrokeSizeChange}
+          inkColor={inkColor}
+          onInkColorChange={handleInkColorChange}
+          isOpen={isToolDockOpen}
+          onToggleOpen={() => setIsToolDockOpen((v) => !v)}
+        />
+
+        <section className="practice-column" aria-label="Writing practice area">
+          {/* Selected character header + guide animation controls */}
+          <div className="character-card">
+            <div className="character-identity">
+              <div className="character-badge" aria-label={`Selected character ${selected.char}`}>
+                <span className="character-big">{selected.char}</span>
+              </div>
+              <div className="character-meta">
+                <div className="character-title-row">
+                  <span className="character-romaji">{selected.romaji}</span>
+                  <span className="script-chip">
+                    {selected.script === 'hiragana'
+                      ? 'Hiragana'
+                      : selected.script === 'katakana'
+                        ? 'Katakana'
+                        : selected.script === 'kanji'
+                          ? 'Kanji'
+                          : selected.script === 'thai'
+                            ? 'Thai'
+                            : selected.script === 'hindi-vowels'
+                              ? 'Hindi · Vowels'
+                              : selected.script === 'hindi-consonants'
+                                ? 'Hindi · Consonants'
+                                : 'Hindi · Combine'}
+                  </span>
+                </div>
+                <p className="stroke-count-label">
+                  {strokes.length > 0
+                    ? `${strokes.length} / ${selected.strokes.length} ${selected.strokes.length === 1 ? 'stroke' : 'strokes'}`
+                    : `${selected.strokes.length} ${selected.strokes.length === 1 ? 'stroke' : 'strokes'}`}
+                </p>
+              </div>
+            </div>
+
+            <div className="character-nav">
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => handleStepCharacter(-1)}
+                aria-label="Previous character"
+                title="Previous character"
+              >
+                <ChevronLeft size={18} />
+              </button>
+              <span className="nav-counter">
+                {currentIndex + 1} / {currentList.length}
+              </span>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => handleStepCharacter(1)}
+                aria-label="Next character"
+                title="Next character"
+              >
+                <ChevronRight size={18} />
+              </button>
+            </div>
+          </div>
+
+          {/* Guide Animation Controls */}
+          <div className="guide-bar" role="region" aria-label="Stroke guide animation controls">
+            <div className="guide-controls-left">
+              <button
+                type="button"
+                className="guide-play-btn"
+                onClick={handleTogglePlay}
+                aria-label={isGuidePlaying ? 'Pause guide animation' : 'Play guide animation'}
+              >
+                {isGuidePlaying ? <Pause size={15} /> : <Play size={15} />}
+                <span>{isGuidePlaying ? 'Pause Guide' : 'Play Guide'}</span>
+              </button>
+
+              <button
+                type="button"
+                className="guide-secondary-btn"
+                onClick={handleReplayGuide}
+                title="Replay full stroke order animation"
+              >
+                <RotateCcw size={14} />
+                <span>Replay</span>
+              </button>
+
+              <button
+                type="button"
+                className="guide-secondary-btn"
+                onClick={handleToggleGuideSpeed}
+                title="Toggle animation speed"
+              >
+                <Gauge size={14} />
+                <span>{guideSpeed === 'slow' ? 'Slow' : 'Normal'}</span>
+              </button>
+            </div>
+
+            {/* Individual stroke step pills */}
+            <div className="stroke-pills" aria-label="Play individual stroke">
+              <span className="stroke-pills-label">Stroke:</span>
+              {selected.strokes.map((_, idx) => {
+                const isActive =
+                  (isGuidePlaying && activeGuideStroke === idx) || focusedStroke === idx;
+                return (
+                  <button
+                    key={`${selected.unicode}-pill-${idx}`}
+                    type="button"
+                    className={`stroke-pill ${isActive ? 'is-active' : ''}`}
+                    onClick={() => handlePlaySingleStroke(idx)}
+                    title={`Play stroke ${idx + 1}`}
+                  >
+                    {idx + 1}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Interactive Grid Writing Canvas */}
+          <WritingCanvas
+            character={selected}
+            pencil={pencil}
+            strokeSize={strokeSize}
+            inkColor={inkColor}
+            gridStyle={gridStyle}
+            showTrace={showTrace}
+            showNumbers={showNumbers}
+            inputMode={activeInputMode}
+            strokes={strokes}
+            validationStatus={validation.status}
+            onStrokesChange={setStrokes}
+            onUserPracticed={handleUserPracticed}
+            isGuidePlaying={isGuidePlaying}
+            guidePlayNonce={guidePlayNonce}
+            guideSpeed={guideSpeed}
+            focusedStroke={focusedStroke}
+            onGuideComplete={handleGuideComplete}
+            onActiveGuideStrokeChange={setActiveGuideStroke}
+          />
+
+          {/* Canvas Actions Bar */}
+          <ToolBar
+            gridStyle={gridStyle}
+            onCycleGrid={handleCycleGrid}
+            showTrace={showTrace}
+            onToggleTrace={handleToggleTrace}
+            showNumbers={showNumbers}
+            onToggleNumbers={handleToggleNumbers}
+            canUndo={strokes.length > 0}
+            onUndo={handleUndo}
+            onClear={handleClear}
+          />
+        </section>
+
+        {/* Alphabet Selector Panel */}
+        {language === 'thai' ? (
+          <ScriptGridPanel
+            title="Thai Consonants"
+            sampleRange="ก–ฮ"
+            ariaLabel="Thai alphabet selector"
+            items={THAI_CONSONANTS_LIST}
+            selected={selected}
+            onSelect={selectCharacter}
+            practicedChars={practicedChars}
+          />
+        ) : language === 'hindi' ? (
+          <HindiChart
+            script={hindiScript}
+            onScriptChange={handleHindiScriptChange}
+            selected={selected}
+            onSelect={selectCharacter}
+            practicedChars={practicedChars}
+          />
+        ) : (
+          <KanaChart
+            script={script}
+            onScriptChange={handleScriptChange}
+            selected={selected}
+            onSelect={selectCharacter}
+            practicedChars={practicedChars}
+          />
+        )}
+      </main>
+      )}
+
+      <footer className="app-footer">
+        <div className="footer-line">
+          {language === 'thai' ? (
+            <span>Thai Consonants Practice · ก–ฮ Stroke Guide</span>
+          ) : language === 'hindi' ? (
+            <span>Hindi Devanagari Practice · Complete Varnamala Stroke Guide</span>
+          ) : (
+            <span>Japanese Hiragana, Katakana &amp; Kanji · Stroke data from KanjiVG (CC BY-SA 3.0)</span>
+          )}
+          <span className="footer-sep" aria-hidden="true">
+            ·
+          </span>
+          <span className="footer-status" data-testid="storage-status">
+            {currentUser.name} · {isOffline ? 'Offline mode' : 'Offline-ready SPA'} ·{' '}
+            {practicedChars.size} / {TOTAL_CHARACTER_COUNT} saved locally
+          </span>
+        </div>
+      </footer>
+    </div>
+  );
+}
+
+export default App;
