@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://aayushkumaraks.github.io/Learn2Write/sitemap.xml

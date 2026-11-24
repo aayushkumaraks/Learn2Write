@@ -543,10 +543,16 @@ describe('Learn2Write App UI flows', () => {
 });
 
 describe('Offline SPA and durable browser progress storage', () => {
-  it('loads zero external network resources in index.html', () => {
-    expect(indexHtml).not.toMatch(/https?:\/\//i);
+  it('loads zero external network resources in index.html and includes SEO metadata', () => {
+    expect(indexHtml).not.toMatch(/<script[^>]+src=["']https?:\/\//i);
+    expect(indexHtml).not.toMatch(
+      /<link[^>]+rel=["'](?:stylesheet|preconnect|dns-prefetch|preload)["'][^>]+https?:\/\//i
+    );
     expect(indexHtml).toContain('manifest.webmanifest');
     expect(indexHtml).toContain('icon.svg');
+    expect(indexHtml).toContain('rel="canonical" href="https://aayushkumaraks.github.io/Learn2Write/"');
+    expect(indexHtml).toContain('property="og:title"');
+    expect(indexHtml).toContain('application/ld+json');
   });
 
   it('asks only for User name on first load and supports login, logout, and listing all local browser users', () => {
