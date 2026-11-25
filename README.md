@@ -1,19 +1,22 @@
 # Learn2Write
 
-A completely offline, zero-backend React single-page application (SPA) for learning Japanese (**Hiragana**, **Katakana**, **Kanji**), **Thai**, and **Hindi Devanagari** stroke order on touch screens and desktop browsers, ready to host on GitHub Pages.
+![Learn2Write Banner](./docs/banner.png)
+
+A completely offline, zero-backend React single-page application (SPA) for learning Japanese (**Hiragana**, **Katakana**, and daily-use **Kanji**) stroke order on touch screens and desktop browsers, ready to host on GitHub Pages.
 
 **Live App:** https://aayushkumaraks.github.io/Learn2Write/
 
 ## Features
 
-- **100% Offline Single-Page App:** All stroke datasets, styles, icons, and system font stacks are bundled locally with zero external runtime network requests. A build-generated Service Worker (`sw.js`) and Web App Manifest (`manifest.webmanifest`) precache the entire app shell so it reloads and runs seamlessly offline.
-- **Offline User-Name Profiles & Browser User List:** On first load, if no local user is active, the app asks only for a **User name** (no password) as an offline identifier. Users can login or logout with only a name, see all local users using the app on the current browser (with active-tab indicators and practiced counts), and switch between local users with isolated progress.
-- **Profile Page (Language-Wise & User-Wise Progress and Accuracy):** Logged-in users can open the **Profile** view to inspect overall completion, stroke-validation accuracy, per-language and per-script progress (Japanese Hiragana/Katakana/Kanji, Thai, Hindi Vowels/Consonants/Combine), and a user-wise comparison table across all local users on the browser.
-- **Permanent Browser Storage for User Progress:** Per-user practiced characters, match counts, writing preferences, and last active character/script are persisted locally in both `localStorage` and `IndexedDB` (with `navigator.storage.persist()` requested on startup and cross-tab sync), keeping progress available indefinitely until the user clears browser data.
-- **Multi-Script Stroke Datasets:** Complete charts for Japanese Hiragana (46), Katakana (46), Kanji (45), Thai Consonants (44), and Hindi Devanagari Vowels, Consonants, and Combinations (73).
-- **Stroke-Order Guide Animation:** Animated stroke-by-stroke playback with moving directional brush indicator, numbered stroke order, speed toggle (`Normal` / `Slow`), replay, and per-stroke step buttons.
-- **Practice Grid & Writing Instruments:** Switchable crosshair (`十字リーダー`), 4×4 quad grid, or blank paper, with **2B Pencil**, **Calligraphy Brush**, **Ballpoint Pen**, and **Felt Marker** presets.
-- **Automatic Touch Screen Detection:** Detects touch capability (`ontouchstart`, `navigator.maxTouchPoints`, `(pointer: coarse)`) and binds native `touch*` event listeners on touch devices or `mouse*` listeners on mouse devices, with an optional manual toggle for hybrid devices.
+- **100% Offline Single-Page App & Auto-Updating Cache:** All stroke datasets, styles, icons, and system font stacks are bundled locally with zero external runtime network requests. A build-generated Service Worker (`sw.js`) and Web App Manifest (`manifest.webmanifest`) precache the app shell for offline use, use network-first navigation when online, clear old versioned caches automatically, and reload on Service Worker upgrades.
+- **Japanese Stroke Datasets:** Complete charts for **Hiragana** (46), **Katakana** (46), and daily-use **Kanji** (45) powered by KanjiVG stroke-order paths. *(Thai and Hindi are currently disabled in the language selector.)*
+- **Four Difficulty Levels & Auto-Smoothing:** Switch between **Easy**, **Medium**, **Strict**, and **Parents Oversight** from the login screen, toolbar stepper, or Profile page (with the active difficulty badge shown on the active **Practice** / **Profile** tab pill). **Easy** and **Medium** automatically smooth hand-drawn strokes, while **Strict** and **Parents Oversight** evaluate raw curves. Progress and unlocked stages are tracked separately per difficulty.
+- **Gamified Stage Progression & Feedback:** Characters ahead stay locked until earlier ones are completed, with a pop-up prompt when clicking a locked character. Mismatches show a **Retry** pop-up until your first match on a character; succeeding plays a continuous confetti celebration and offers a one-time **Keep Practicing** / **Move Forward** modal before entering practice mode (animation + checkmark/cross icon only).
+- **Offline User-Name Profiles & Browser User List:** Log in or switch between local browser users using only a **User name** (no password). Progress is persisted locally in both `localStorage` and `IndexedDB` (with `navigator.storage.persist()` and cross-tab sync).
+- **Profile Dashboard & Management:** View per-difficulty completion, stroke-validation accuracy, Japanese script breakdowns, and a user-wise comparison table across all local browser users, plus **Reset Progress** and **Delete Profile** actions with confirmation dialogs.
+- **Collapsible Writing Tools Dock & Quick Canvas Actions:** A 2×2 **Brush & Ink** side dock (**2B Pencil**, **Calligraphy Brush**, **Ballpoint Pen**, **Felt Marker**, tip sizes, and ink colors) that starts collapsed on small viewports, alongside top-left floating icon-only **Undo** and **Clear** buttons on the canvas.
+- **Stroke-Order Guide Animation & Practice Grids:** Animated stroke-by-stroke playback with moving directional indicator, numbered stroke order, speed toggle (`Normal` / `Slow`), replay (`Space`), per-stroke step buttons, and switchable crosshair (`十字リーダー`), 4×4 quad, or blank grids.
+- **Automatic Touch Screen Detection:** Detects touch capability (`ontouchstart`, `navigator.maxTouchPoints`, `(pointer: coarse)`) and binds native `touch*` listeners on touch devices or `mouse*` listeners on desktop, with a manual toggle for hybrid devices.
 
 ## Local Development
 
@@ -37,4 +40,4 @@ npm run build
 
 ## Attribution
 
-Japanese stroke order vector data is sourced from KanjiVG under the Creative Commons Attribution-Share Alike 3.0 license.
+Japanese stroke order vector data is sourced from [KanjiVG](https://kanjivg.tagaini.net/) under the Creative Commons Attribution-Share Alike 3.0 license.
