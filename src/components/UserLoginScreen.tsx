@@ -1,11 +1,16 @@
 import { useState, type FormEvent } from 'react';
 import { LogIn, Users } from 'lucide-react';
+import type { StrokeDifficulty } from '../types/kana';
+import { getDifficultyBucket } from '../utils/progressStorage';
+import { DIFFICULTY_LABELS, DIFFICULTY_ORDER } from '../utils/strokeValidator';
 import { normalizeDisplayName, type LocalUserProfile } from '../utils/userStorage';
 
 interface UserLoginScreenProps {
   localUsers: LocalUserProfile[];
   activeBrowserUserIds: ReadonlySet<string>;
   totalCharacters: number;
+  difficulty: StrokeDifficulty;
+  onDifficultyChange: (difficulty: StrokeDifficulty) => void;
   onLogin: (userName: string) => void;
 }
 
@@ -13,6 +18,8 @@ export function UserLoginScreen({
   localUsers,
   activeBrowserUserIds,
   totalCharacters,
+  difficulty,
+  onDifficultyChange,
   onLogin,
 }: UserLoginScreenProps) {
   const [userName, setUserName] = useState('');
@@ -74,6 +81,32 @@ export function UserLoginScreen({
             )}
           </div>
 
+          <div className="login-field">
+            <span className="login-label">Difficulty</span>
+            <div
+              className="difficulty-pills"
+              role="radiogroup"
+              aria-label="Choose stroke difficulty"
+              data-testid="login-difficulty-selector"
+            >
+              {DIFFICULTY_ORDER.map((diff) => {
+                const active = difficulty === diff;
+                return (
+                  <button
+                    key={diff}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    className={`diff-pill-btn is-${diff} ${active ? 'is-active' : ''}`}
+                    onClick={() => onDifficultyChange(diff)}
+                  >
+                    {DIFFICULTY_LABELS[diff]}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           <button type="submit" className="login-submit-btn">
             <LogIn size={16} />
             <span>Login</span>
@@ -89,7 +122,7 @@ export function UserLoginScreen({
             <ul className="login-users-list" data-testid="local-users-list">
               {localUsers.map((user) => {
                 const isLive = activeBrowserUserIds.has(user.id);
-                const practicedCount = user.progress.practicedChars.length;
+                const practicedCount = getDifficultyBucket(user.progress, difficulty).practicedChars.length;
                 return (
                   <li key={user.id}>
                     <button

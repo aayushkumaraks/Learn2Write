@@ -1,6 +1,12 @@
 import { HIRAGANA_LIST, KANJI_LIST, KATAKANA_LIST } from '../data/kana';
-import type { HindiScript, KanaCharacter, KanaScript, WritingLanguage } from '../types/kana';
-import type { PersistedProgressData } from './progressStorage';
+import type {
+  HindiScript,
+  KanaCharacter,
+  KanaScript,
+  StrokeDifficulty,
+  WritingLanguage,
+} from '../types/kana';
+import { getDifficultyBucket, type PersistedProgressData } from './progressStorage';
 import type { LocalUserProfile } from './userStorage';
 
 export interface ScriptStats {
@@ -73,15 +79,20 @@ const LANGUAGE_DEFINITIONS: Array<{
   },
 ];
 
-function computeScriptStats(def: ScriptDefinition, progress: PersistedProgressData): ScriptStats {
-  const practicedSet = new Set(progress.practicedChars);
+function computeScriptStats(
+  def: ScriptDefinition,
+  progress: PersistedProgressData,
+  difficulty: StrokeDifficulty
+): ScriptStats {
+  const bucket = getDifficultyBucket(progress, difficulty);
+  const practicedSet = new Set(bucket.practicedChars);
   let practicedChars = 0;
   let matchedChars = 0;
   let attempts = 0;
   let matches = 0;
 
   for (const item of def.items) {
-    const entry = progress.characters[item.char];
+    const entry = bucket.characters[item.char];
     if (entry) {
       const charAttempts = Math.max(1, entry.practicedCount);
       const charMatches = Math.min(charAttempts, Math.max(0, entry.matchedCount));
@@ -115,9 +126,12 @@ function computeScriptStats(def: ScriptDefinition, progress: PersistedProgressDa
   };
 }
 
-export function computeLanguageStats(progress: PersistedProgressData): LanguageStats[] {
+export function computeLanguageStats(
+  progress: PersistedProgressData,
+  difficulty: StrokeDifficulty = progress.preferences.difficulty
+): LanguageStats[] {
   return LANGUAGE_DEFINITIONS.map((langDef) => {
-    const scripts = langDef.scripts.map((s) => computeScriptStats(s, progress));
+    const scripts = langDef.scripts.map((s) => computeScriptStats(s, progress, difficulty));
     const totalChars = scripts.reduce((sum, s) => sum + s.totalChars, 0);
     const practicedChars = scripts.reduce((sum, s) => sum + s.practicedChars, 0);
     const matchedChars = scripts.reduce((sum, s) => sum + s.matchedChars, 0);
@@ -140,8 +154,11 @@ export function computeLanguageStats(progress: PersistedProgressData): LanguageS
   });
 }
 
-export function computeUserStats(user: LocalUserProfile): UserProfileStats {
-  const languages = computeLanguageStats(user.progress);
+export function computeUserStats(
+  user: LocalUserProfile,
+  difficulty: StrokeDifficulty = user.progress.preferences.difficulty
+): UserProfileStats {
+  const languages = computeLanguageStats(user.progress, difficulty);
   const totalChars = languages.reduce((sum, l) => sum + l.totalChars, 0);
   const practicedChars = languages.reduce((sum, l) => sum + l.practicedChars, 0);
   const matchedChars = languages.reduce((sum, l) => sum + l.matchedChars, 0);

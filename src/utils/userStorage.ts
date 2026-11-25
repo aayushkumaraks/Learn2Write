@@ -234,6 +234,48 @@ export function logoutUsersStore(store: LocalUsersStore, now = Date.now()): Loca
   };
 }
 
+export function resetUserProgressInStore(
+  store: LocalUsersStore,
+  userId: string,
+  now = Date.now()
+): LocalUsersStore {
+  const user = store.users[userId];
+  if (!user) return store;
+
+  const timestamp = Math.max(store.updatedAt + 1, now);
+  return {
+    ...store,
+    updatedAt: timestamp,
+    users: {
+      ...store.users,
+      [userId]: {
+        ...user,
+        lastActiveAt: timestamp,
+        progress: createDefaultProgressData(timestamp),
+      },
+    },
+  };
+}
+
+export function deleteUserFromStore(
+  store: LocalUsersStore,
+  userId: string,
+  now = Date.now()
+): LocalUsersStore {
+  if (!store.users[userId]) return store;
+
+  const timestamp = Math.max(store.updatedAt + 1, now);
+  const nextUsers = { ...store.users };
+  delete nextUsers[userId];
+
+  return {
+    ...store,
+    updatedAt: timestamp,
+    activeUserId: store.activeUserId === userId ? null : store.activeUserId,
+    users: nextUsers,
+  };
+}
+
 export function updateUserProgressInStore(
   store: LocalUsersStore,
   userId: string,

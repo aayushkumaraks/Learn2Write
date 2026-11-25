@@ -1,4 +1,4 @@
-import { Check, X } from 'lucide-react';
+import { Check, Eraser, Undo2, X } from 'lucide-react';
 import { useCallback, useEffect, useRef } from 'react';
 import type { StrokeValidationResult } from '../utils/strokeValidator';
 import type {
@@ -8,9 +8,10 @@ import type {
   InputMode,
   KanaCharacter,
   PencilType,
+  StrokeDifficulty,
   StrokeSize,
 } from '../types/kana';
-import { renderAllStrokes, renderStroke } from '../utils/pencilEngine';
+import { renderAllStrokes, renderStroke, smoothStrokePoints } from '../utils/pencilEngine';
 import { StrokeGuideOverlay } from './StrokeGuideOverlay';
 
 interface WritingCanvasProps {
@@ -23,8 +24,12 @@ interface WritingCanvasProps {
   showNumbers: boolean;
   inputMode: InputMode;
   strokes: DrawnStroke[];
+  difficulty?: StrokeDifficulty;
   validationStatus?: StrokeValidationResult['status'];
+  successAnimNonce?: number;
   onStrokesChange: (updater: (prev: DrawnStroke[]) => DrawnStroke[]) => void;
+  onUndo?: () => void;
+  onClear?: () => void;
   onUserPracticed: (char: string) => void;
   isGuidePlaying: boolean;
   guidePlayNonce: number;
@@ -44,8 +49,12 @@ export function WritingCanvas({
   showNumbers,
   inputMode,
   strokes,
+  difficulty = 'medium',
   validationStatus = 'idle',
+  successAnimNonce = 0,
   onStrokesChange,
+  onUndo,
+  onClear,
   onUserPracticed,
   isGuidePlaying,
   guidePlayNonce,
@@ -65,6 +74,7 @@ export function WritingCanvas({
     pencil,
     strokeSize,
     inkColor,
+    difficulty,
     char: character.char,
     expectedStrokes: character.strokes.length,
   });
@@ -72,6 +82,7 @@ export function WritingCanvas({
     pencil,
     strokeSize,
     inkColor,
+    difficulty,
     char: character.char,
     expectedStrokes: character.strokes.length,
   };
@@ -175,7 +186,11 @@ export function WritingCanvas({
 
     const finishStroke = () => {
       if (!isDrawingRef.current || !activeStrokeRef.current) return;
-      const finished = activeStrokeRef.current;
+      const raw = activeStrokeRef.current;
+      const finished: DrawnStroke = {
+        ...raw,
+        points: smoothStrokePoints(raw.points, settingsRef.current.difficulty),
+      };
       activeStrokeRef.current = null;
       isDrawingRef.current = false;
       const nextCount = strokesRef.current.length + 1;
@@ -348,16 +363,68 @@ export function WritingCanvas({
         aria-label={`Practice canvas for ${character.script} ${character.char} (${character.romaji})`}
       />
 
-      {validationStatus === 'matched' && (
-        <div
-          className="validation-badge is-matched"
-          role="status"
-          aria-label="Character matches"
-          data-testid="match-checkmark"
-          title="Great job! Character matches."
-        >
-          <Check size={20} strokeWidth={2.8} />
+      {(onUndo || onClear) && (
+        <div className="canvas-floating-actions" role="group" aria-label="Quick canvas actions">
+          {onUndo && (
+            <button
+              type="button"
+              className="canvas-float-btn"
+              onClick={onUndo}
+              disabled={strokes.length === 0}
+              aria-label="Quick undo"
+              title="Undo last stroke"
+              data-testid="canvas-undo-btn"
+            >
+              <Undo2 size={15} />
+            </button>
+          )}
+          {onClear && (
+            <button
+              type="button"
+              className="canvas-float-btn is-clear"
+              onClick={onClear}
+              disabled={strokes.length === 0}
+              aria-label="Quick reset"
+              title="Clear canvas"
+              data-testid="canvas-clear-btn"
+            >
+              <Eraser size={15} />
+            </button>
+          )}
         </div>
+      )}
+
+      {validationStatus === 'matched' && (
+        <>
+          {successAnimNonce > 0 && (
+            <div
+              key={`success-anim-${successAnimNonce}`}
+              className="success-burst"
+              aria-hidden="true"
+              data-testid="success-animation"
+            >
+              <span className="success-ring" />
+              <span className="success-spark s1" />
+              <span className="success-spark s2" />
+              <span className="success-spark s3" />
+              <span className="success-spark s4" />
+              <span className="success-spark s5" />
+              <span className="success-spark s6" />
+              <span className="success-spark s7" />
+              <span className="success-spark s8" />
+            </div>
+          )}
+          <div
+            key={`match-badge-${successAnimNonce}`}
+            className="validation-badge is-matched"
+            role="status"
+            aria-label="Character matches"
+            data-testid="match-checkmark"
+            title="Great job! Character matches."
+          >
+            <Check size={20} strokeWidth={2.8} />
+          </div>
+        </>
       )}
 
       {validationStatus === 'mismatch' && (

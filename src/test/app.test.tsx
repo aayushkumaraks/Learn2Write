@@ -12,7 +12,7 @@ import { HIRAGANA_LIST, KANJI_LIST, KATAKANA_LIST } from '../data/kana';
 import { detectTouchCapability } from '../hooks/useTouchDetection';
 import { WritingCanvas } from '../components/WritingCanvas';
 import { requestPersistentStorage } from '../utils/offline';
-import { renderAllStrokes } from '../utils/pencilEngine';
+import { renderAllStrokes, smoothStrokePoints } from '../utils/pencilEngine';
 import {
   LEGACY_PRACTICED_STORAGE_KEY,
   PROGRESS_STORAGE_KEY,
@@ -118,14 +118,14 @@ describe('Touch screen detection and event listener binding', () => {
         showNumbers={true}
         inputMode="touch"
         strokes={[]}
-        onStrokesChange={() => {}}
-        onUserPracticed={() => {}}
+        onStrokesChange={() => { }}
+        onUserPracticed={() => { }}
         isGuidePlaying={false}
         guidePlayNonce={0}
         guideSpeed="normal"
         focusedStroke={null}
-        onGuideComplete={() => {}}
-        onActiveGuideStrokeChange={() => {}}
+        onGuideComplete={() => { }}
+        onActiveGuideStrokeChange={() => { }}
       />
     );
 
@@ -152,14 +152,14 @@ describe('Touch screen detection and event listener binding', () => {
         showNumbers={true}
         inputMode="mouse"
         strokes={[]}
-        onStrokesChange={() => {}}
-        onUserPracticed={() => {}}
+        onStrokesChange={() => { }}
+        onUserPracticed={() => { }}
         isGuidePlaying={false}
         guidePlayNonce={0}
         guideSpeed="normal"
         focusedStroke={null}
-        onGuideComplete={() => {}}
-        onActiveGuideStrokeChange={() => {}}
+        onGuideComplete={() => { }}
+        onActiveGuideStrokeChange={() => { }}
       />
     );
 
@@ -232,8 +232,8 @@ describe('Learn2Write App UI flows', () => {
         guidePlayNonce={0}
         guideSpeed="normal"
         focusedStroke={null}
-        onGuideComplete={() => {}}
-        onActiveGuideStrokeChange={() => {}}
+        onGuideComplete={() => { }}
+        onActiveGuideStrokeChange={() => { }}
       />
     );
 
@@ -247,7 +247,7 @@ describe('Learn2Write App UI flows', () => {
       bottom: 200,
       x: 0,
       y: 0,
-      toJSON: () => {},
+      toJSON: () => { },
     });
 
     // First stroke should not mark 3-stroke character as practiced
@@ -280,8 +280,8 @@ describe('Learn2Write App UI flows', () => {
         guidePlayNonce={0}
         guideSpeed="normal"
         focusedStroke={null}
-        onGuideComplete={() => {}}
-        onActiveGuideStrokeChange={() => {}}
+        onGuideComplete={() => { }}
+        onActiveGuideStrokeChange={() => { }}
       />
     );
 
@@ -382,14 +382,14 @@ describe('Learn2Write App UI flows', () => {
         inputMode="mouse"
         strokes={matchingStrokes.slice(0, 2)}
         validationStatus="in-progress"
-        onStrokesChange={() => {}}
-        onUserPracticed={() => {}}
+        onStrokesChange={() => { }}
+        onUserPracticed={() => { }}
         isGuidePlaying={false}
         guidePlayNonce={0}
         guideSpeed="normal"
         focusedStroke={null}
-        onGuideComplete={() => {}}
-        onActiveGuideStrokeChange={() => {}}
+        onGuideComplete={() => { }}
+        onActiveGuideStrokeChange={() => { }}
       />
     );
     expect(screen.queryByTestId('match-checkmark')).not.toBeInTheDocument();
@@ -408,14 +408,14 @@ describe('Learn2Write App UI flows', () => {
         inputMode="mouse"
         strokes={reversedStrokes}
         validationStatus="mismatch"
-        onStrokesChange={() => {}}
-        onUserPracticed={() => {}}
+        onStrokesChange={() => { }}
+        onUserPracticed={() => { }}
         isGuidePlaying={false}
         guidePlayNonce={0}
         guideSpeed="normal"
         focusedStroke={null}
-        onGuideComplete={() => {}}
-        onActiveGuideStrokeChange={() => {}}
+        onGuideComplete={() => { }}
+        onActiveGuideStrokeChange={() => { }}
       />
     );
     expect(screen.queryByTestId('match-checkmark')).not.toBeInTheDocument();
@@ -434,14 +434,14 @@ describe('Learn2Write App UI flows', () => {
         inputMode="mouse"
         strokes={matchingStrokes}
         validationStatus="matched"
-        onStrokesChange={() => {}}
-        onUserPracticed={() => {}}
+        onStrokesChange={() => { }}
+        onUserPracticed={() => { }}
         isGuidePlaying={false}
         guidePlayNonce={0}
         guideSpeed="normal"
         focusedStroke={null}
-        onGuideComplete={() => {}}
-        onActiveGuideStrokeChange={() => {}}
+        onGuideComplete={() => { }}
+        onActiveGuideStrokeChange={() => { }}
       />
     );
     expect(screen.getByTestId('match-checkmark')).toBeInTheDocument();
@@ -540,6 +540,225 @@ describe('Learn2Write App UI flows', () => {
     expect(select.value).toBe('japanese');
     expect(screen.getByLabelText('Selected character あ')).toBeInTheDocument();
   });
+
+  it('plays success animation on every match and shows the continue/advance modal only once per character', () => {
+    renderLoggedInApp('Mina');
+
+    // Switch to Japanese Kanji 一 (single horizontal stroke) for deterministic drawing match
+    fireEvent.click(screen.getByRole('tab', { name: /Kanji/i }));
+    expect(screen.getByLabelText('Selected character 一')).toBeInTheDocument();
+
+    const modeBadge = screen.getByTestId('input-mode-badge');
+    if (modeBadge.textContent?.includes('Touch Mode')) {
+      fireEvent.click(modeBadge);
+    }
+
+    const canvas = screen.getByLabelText(/Practice canvas for/i);
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: 0,
+      width: 200,
+      height: 200,
+      right: 200,
+      bottom: 200,
+      x: 0,
+      y: 0,
+      toJSON: () => { },
+    });
+
+    const drawMatchingIchi = () => {
+      const pts = parseSvgPathToPolyline(KANJI_LIST[0].strokes[0]);
+      const start = pts[0];
+      const mid = pts[Math.floor(pts.length / 2)];
+      const end = pts[pts.length - 1];
+      fireEvent.mouseDown(canvas, {
+        button: 0,
+        clientX: (start.x / 109) * 200,
+        clientY: (start.y / 109) * 200,
+      });
+      fireEvent.mouseMove(canvas, {
+        clientX: (mid.x / 109) * 200,
+        clientY: (mid.y / 109) * 200,
+      });
+      fireEvent.mouseMove(canvas, {
+        clientX: (end.x / 109) * 200,
+        clientY: (end.y / 109) * 200,
+      });
+      fireEvent.mouseUp(canvas);
+    };
+
+    const drawWrongIchi = () => {
+      // Vertical line instead of horizontal 一
+      fireEvent.mouseDown(canvas, { button: 0, clientX: 100, clientY: 20 });
+      fireEvent.mouseMove(canvas, { clientX: 100, clientY: 180 });
+      fireEvent.mouseUp(canvas);
+    };
+
+    // Failing before succeeding at least once shows the failure modal with Retry
+    drawWrongIchi();
+    expect(screen.getByTestId('mismatch-cross')).toBeInTheDocument();
+    expect(screen.getByTestId('failure-modal')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Retry/i }));
+    expect(screen.queryByTestId('failure-modal')).not.toBeInTheDocument();
+
+    // Failing a second time before getting it right still shows the failure modal
+    drawWrongIchi();
+    expect(screen.getByTestId('failure-modal')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Retry/i }));
+
+    // 1st match: success animation + modal + continuous confetti around modal
+    drawMatchingIchi();
+    expect(screen.getByTestId('success-animation')).toBeInTheDocument();
+    expect(screen.getByTestId('success-modal')).toBeInTheDocument();
+    expect(screen.getByTestId('modal-confetti')).toBeInTheDocument();
+
+    // Click "Keep Practicing" -> enters practice mode for this character
+    fireEvent.click(screen.getByRole('button', { name: /Keep Practicing/i }));
+    expect(screen.queryByTestId('success-modal')).not.toBeInTheDocument();
+
+    // Failing in practice mode shows only the red cross icon (no failure modal)
+    drawWrongIchi();
+    expect(screen.getByTestId('mismatch-cross')).toBeInTheDocument();
+    expect(screen.queryByTestId('failure-modal')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Clear/i }));
+
+    // 2nd match on the same character: success animation + checkmark, no success modal
+    drawMatchingIchi();
+    expect(screen.getByTestId('success-animation')).toBeInTheDocument();
+    expect(screen.queryByTestId('success-modal')).not.toBeInTheDocument();
+
+    // Switch to 二, then verify "Move Forward" advances when modal appears on a new character
+    fireEvent.click(screen.getByRole('button', { name: /Next character/i }));
+    expect(screen.getByLabelText('Selected character 二')).toBeInTheDocument();
+    for (const d of KANJI_LIST[1].strokes) {
+      const pts = parseSvgPathToPolyline(d);
+      fireEvent.mouseDown(canvas, {
+        button: 0,
+        clientX: (pts[0].x / 109) * 200,
+        clientY: (pts[0].y / 109) * 200,
+      });
+      fireEvent.mouseMove(canvas, {
+        clientX: (pts[pts.length - 1].x / 109) * 200,
+        clientY: (pts[pts.length - 1].y / 109) * 200,
+      });
+      fireEvent.mouseUp(canvas);
+    }
+    expect(screen.getByTestId('success-modal')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Move Forward/i }));
+    expect(screen.getByLabelText('Selected character 三')).toBeInTheDocument();
+  });
+
+  it('keeps characters ahead locked and prompts the user to finish earlier ones first', () => {
+    renderLoggedInApp('Kenji');
+
+    // Initially あ is unlocked and い is locked
+    const iButton = screen.getByRole('button', { name: /い \(i\) — Locked/i });
+    expect(iButton).toHaveAttribute('aria-disabled', 'true');
+
+    // Clicking locked character stays on あ and shows the locked pop-up modal (no banner)
+    fireEvent.click(iButton);
+    expect(screen.getByLabelText('Selected character あ')).toBeInTheDocument();
+    expect(screen.queryByTestId('locked-notice')).not.toBeInTheDocument();
+    expect(screen.getByTestId('locked-modal')).toHaveTextContent(
+      /finish\s*あ\s*\(a\)\s*first to unlock it/i
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Practice あ/i }));
+    expect(screen.queryByTestId('locked-modal')).not.toBeInTheDocument();
+  });
+
+  it('provides icon-only floating undo and clear buttons on the top-left of the canvas', () => {
+    renderLoggedInApp('Sora');
+
+    const undoBtn = screen.getByTestId('canvas-undo-btn');
+    const clearBtn = screen.getByTestId('canvas-clear-btn');
+    expect(undoBtn).toBeDisabled();
+    expect(clearBtn).toBeDisabled();
+    expect(undoBtn.textContent).toBe('');
+    expect(clearBtn.textContent).toBe('');
+
+    const modeBadge = screen.getByTestId('input-mode-badge');
+    if (modeBadge.textContent?.includes('Touch Mode')) {
+      fireEvent.click(modeBadge);
+    }
+
+    const canvas = screen.getByLabelText(/Practice canvas for/i);
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: 0,
+      width: 200,
+      height: 200,
+      right: 200,
+      bottom: 200,
+      x: 0,
+      y: 0,
+      toJSON: () => { },
+    });
+
+    // Draw two strokes
+    for (let i = 0; i < 2; i++) {
+      fireEvent.mouseDown(canvas, { button: 0, clientX: 30, clientY: 40 + i * 20 });
+      fireEvent.mouseMove(canvas, { clientX: 120, clientY: 40 + i * 20 });
+      fireEvent.mouseUp(canvas);
+    }
+
+    expect(undoBtn).toBeEnabled();
+    expect(clearBtn).toBeEnabled();
+    expect(screen.getByText(/2 \/ 3 strokes/i)).toBeInTheDocument();
+
+    fireEvent.click(undoBtn);
+    expect(screen.getByText(/1 \/ 3 strokes/i)).toBeInTheDocument();
+
+    fireEvent.click(clearBtn);
+    expect(undoBtn).toBeDisabled();
+    expect(clearBtn).toBeDisabled();
+  });
+
+  it('levels stroke difficulty across Easy, Medium, Strict, Parents Oversight and enforces stricter curves', () => {
+    const kana = HIRAGANA_LIST[0]; // あ
+    const bowedFirstStroke = parseSvgPathToPolyline(kana.strokes[0]).map((p, idx, arr) => {
+      const t = idx / Math.max(1, arr.length - 1);
+      // Bow the middle of the stroke by ~11 KanjiVG units
+      const offset = Math.sin(t * Math.PI) * 11;
+      return { x: p.x / 109, y: (p.y + offset) / 109, t: idx * 10, pressure: 0.5 };
+    });
+    const bowedStrokes = kana.strokes.map((d, idx) => ({
+      points:
+        idx === 0
+          ? bowedFirstStroke
+          : parseSvgPathToPolyline(d).map((p, i) => ({
+            x: p.x / 109,
+            y: p.y / 109,
+            t: i * 10,
+            pressure: 0.5,
+          })),
+      pencil: 'brush' as const,
+      size: 'medium' as const,
+      color: '#2B2623',
+    }));
+
+    expect(validateDrawnCharacter(bowedStrokes, kana, 'easy').isMatch).toBe(true);
+    expect(validateDrawnCharacter(bowedStrokes, kana, 'strict').isMatch).toBe(false);
+    expect(validateDrawnCharacter(bowedStrokes, kana, 'asian_parents').isMatch).toBe(false);
+
+    // UI stepper cycles Easy <- Medium -> Strict -> Parents Oversight
+    renderLoggedInApp('Hana');
+    const label = screen.getByTestId('difficulty-label');
+    const upBtn = screen.getByRole('button', { name: /Level up stroke difficulty/i });
+    const downBtn = screen.getByRole('button', { name: /Level down stroke difficulty/i });
+
+    expect(label).toHaveTextContent('Medium');
+    fireEvent.click(downBtn);
+    expect(label).toHaveTextContent('Easy');
+    expect(downBtn).toBeDisabled();
+
+    fireEvent.click(upBtn);
+    expect(label).toHaveTextContent('Medium');
+    fireEvent.click(upBtn);
+    expect(label).toHaveTextContent('Strict');
+    fireEvent.click(upBtn);
+    expect(label).toHaveTextContent('Parents Oversight');
+    expect(upBtn).toBeDisabled();
+  });
 });
 
 describe('Offline SPA and durable browser progress storage', () => {
@@ -628,7 +847,7 @@ describe('Offline SPA and durable browser progress storage', () => {
 
     // Change Japanese script, character, pencil, grid, and guide speed
     fireEvent.click(screen.getByRole('tab', { name: /Katakana/i }));
-    fireEvent.click(screen.getByRole('button', { name: /カ \(ka\)/i }));
+    fireEvent.click(screen.getByRole('button', { name: /ア \(a\)/i }));
     fireEvent.click(screen.getByRole('radio', { name: /Felt Marker/i }));
     fireEvent.click(screen.getByRole('button', { name: /Cross Grid/i }));
     fireEvent.click(screen.getByRole('button', { name: /Normal/i }));
@@ -649,16 +868,16 @@ describe('Offline SPA and durable browser progress storage', () => {
       bottom: 200,
       x: 0,
       y: 0,
-      toJSON: () => {},
+      toJSON: () => { },
     });
-    const ka = KATAKANA_LIST.find((c) => c.char === 'カ')!;
-    for (let i = 0; i < ka.strokes.length; i++) {
+    const aKana = KATAKANA_LIST.find((c) => c.char === 'ア')!;
+    for (let i = 0; i < aKana.strokes.length; i++) {
       fireEvent.mouseDown(canvas, { button: 0, clientX: 20, clientY: 20 + i * 10 });
       fireEvent.mouseMove(canvas, { clientX: 80, clientY: 20 + i * 10 });
       fireEvent.mouseUp(canvas);
     }
 
-    expect(localStorage.getItem(USER_STORE_STORAGE_KEY)).toContain('カ');
+    expect(localStorage.getItem(USER_STORE_STORAGE_KEY)).toContain('ア');
 
     // Simulate closing and reopening the browser (sessionStorage cleared, localStorage kept)
     unmount();
@@ -672,7 +891,7 @@ describe('Offline SPA and durable browser progress storage', () => {
       'aria-selected',
       'true'
     );
-    expect(screen.getByLabelText('Selected character カ')).toBeInTheDocument();
+    expect(screen.getByLabelText('Selected character ア')).toBeInTheDocument();
     expect(screen.getByRole('radio', { name: /Felt Marker/i })).toHaveAttribute(
       'aria-checked',
       'true'
@@ -806,5 +1025,127 @@ describe('Offline SPA and durable browser progress storage', () => {
     // Clicking a script row jumps directly back into Practice view for that script
     fireEvent.click(screen.getByTitle('Practice Japanese Katakana'));
     expect(screen.getByLabelText('Selected character ア')).toBeInTheDocument();
+  });
+
+  it('resets and deletes the current profile only after confirmation', () => {
+    let store = createEmptyUsersStore(0);
+    const loginRes = loginWithUserName(store, 'Ken', 100)!;
+    store = updateUserProgressInStore(loginRes.store, 'ken', (prev) => {
+      let next = recordCharacterPractice(prev, 'あ', { now: 110 });
+      next = recordCharacterPractice(next, 'あ', { matched: true, now: 111 });
+      return next;
+    });
+    saveUsersStore(store);
+
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: /^Profile$/i }));
+    expect(screen.getByTestId('profile-kpi-mastered')).toHaveTextContent('1');
+
+    // Cancel reset leaves progress intact
+    fireEvent.click(screen.getByRole('button', { name: /Reset Progress/i }));
+    expect(screen.getByTestId('profile-confirm-modal')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Cancel/i }));
+    expect(screen.queryByTestId('profile-confirm-modal')).not.toBeInTheDocument();
+    expect(screen.getByTestId('profile-kpi-mastered')).toHaveTextContent('1');
+
+    // Confirm reset clears progress while keeping user logged in
+    fireEvent.click(screen.getByRole('button', { name: /Reset Progress/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Confirm Reset/i }));
+    expect(screen.getByTestId('profile-kpi-mastered')).toHaveTextContent('0');
+    expect(screen.getByRole('heading', { name: 'Ken' })).toBeInTheDocument();
+
+    // Confirm delete removes profile and returns to login gate
+    fireEvent.click(screen.getByRole('button', { name: /Delete Profile/i }));
+    expect(screen.getByTestId('profile-confirm-modal')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Confirm Delete/i }));
+    expect(screen.getByLabelText(/^User name$/i)).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem(USER_STORE_STORAGE_KEY)!).users.ken).toBeUndefined();
+  });
+
+  it('shows difficulty selector on login and profile screens and isolates progress per difficulty', () => {
+    render(<App />);
+
+    // Login screen shows difficulty selector
+    const loginDiff = screen.getByTestId('login-difficulty-selector');
+    expect(loginDiff).toBeInTheDocument();
+    fireEvent.click(loginDiff.querySelector('button:nth-child(3)')!); // Strict
+
+    fireEvent.change(screen.getByLabelText(/^User name$/i), { target: { value: 'Ren' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Login$/i }));
+
+    // Active difficulty in practice is Strict (shown only on the active Practice pill)
+    expect(screen.getByTestId('difficulty-label')).toHaveTextContent('Strict');
+    expect(screen.getByTestId('practice-tab-difficulty')).toHaveTextContent('Strict');
+    expect(screen.queryByTestId('profile-tab-difficulty')).not.toBeInTheDocument();
+
+    // Practice あ in Strict mode
+    const modeBadge = screen.getByTestId('input-mode-badge');
+    if (modeBadge.textContent?.includes('Touch Mode')) {
+      fireEvent.click(modeBadge);
+    }
+    const canvas = screen.getByLabelText(/Practice canvas for/i);
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: 0,
+      width: 200,
+      height: 200,
+      right: 200,
+      bottom: 200,
+      x: 0,
+      y: 0,
+      toJSON: () => { },
+    });
+    for (const d of HIRAGANA_LIST[0].strokes) {
+      const pts = parseSvgPathToPolyline(d);
+      fireEvent.mouseDown(canvas, { button: 0, clientX: (pts[0].x / 109) * 200, clientY: (pts[0].y / 109) * 200 });
+      fireEvent.mouseMove(canvas, { clientX: (pts[pts.length - 1].x / 109) * 200, clientY: (pts[pts.length - 1].y / 109) * 200 });
+      fireEvent.mouseUp(canvas);
+    }
+
+    // Check Profile screen difficulty selector & isolated stats (badge moves to active Profile pill)
+    fireEvent.click(screen.getByRole('button', { name: /^Profile$/i }));
+    expect(screen.queryByTestId('practice-tab-difficulty')).not.toBeInTheDocument();
+    expect(screen.getByTestId('profile-tab-difficulty')).toHaveTextContent('Strict');
+    const profileDiff = screen.getByTestId('profile-difficulty-selector');
+    expect(profileDiff).toBeInTheDocument();
+    expect(screen.getByTestId('profile-kpi-progress')).toHaveTextContent('1 /');
+
+    // Switching to Easy on Profile shows 0 progress for Easy (separate from Strict!)
+    fireEvent.click(profileDiff.querySelector('button:nth-child(1)')!); // Easy
+    expect(screen.getByTestId('profile-kpi-progress')).toHaveTextContent('0 /');
+
+    // Switching back to Strict shows 1 practiced
+    fireEvent.click(profileDiff.querySelector('button:nth-child(3)')!); // Strict
+    expect(screen.getByTestId('profile-kpi-progress')).toHaveTextContent('1 /');
+  });
+
+  it('auto-smooths strokes in Easy and Medium difficulty while leaving Strict and Parents Oversight raw', () => {
+    const jittered = [
+      { x: 0.1, y: 0.5, t: 0, pressure: 0.5 },
+      { x: 0.3, y: 0.58, t: 10, pressure: 0.5 },
+      { x: 0.5, y: 0.42, t: 20, pressure: 0.5 },
+      { x: 0.7, y: 0.58, t: 30, pressure: 0.5 },
+      { x: 0.9, y: 0.5, t: 40, pressure: 0.5 },
+    ];
+
+    const easy = smoothStrokePoints(jittered, 'easy');
+    const medium = smoothStrokePoints(jittered, 'medium');
+    const strict = smoothStrokePoints(jittered, 'strict');
+    const asianParents = smoothStrokePoints(jittered, 'asian_parents');
+
+    // Endpoints are preserved
+    expect(easy[0]).toEqual(jittered[0]);
+    expect(easy[easy.length - 1]).toEqual(jittered[jittered.length - 1]);
+
+    const totalDev = (pts: typeof jittered) =>
+      pts.slice(1, -1).reduce((sum, p) => sum + Math.abs(p.y - 0.5), 0);
+
+    // Easy smooths more strongly than Medium, reducing total interior jitter
+    expect(totalDev(easy)).toBeLessThan(totalDev(medium));
+    expect(totalDev(medium)).toBeLessThan(totalDev(jittered));
+
+    // Strict and Parents Oversight do not alter raw stroke points
+    expect(strict).toEqual(jittered);
+    expect(asianParents).toEqual(jittered);
   });
 });

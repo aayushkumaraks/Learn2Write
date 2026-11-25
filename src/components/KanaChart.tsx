@@ -1,6 +1,15 @@
+import { Lock } from 'lucide-react';
 import { useMemo } from 'react';
-import { buildGojuonGrid, KANJI_LIST, VOWEL_HEADERS } from '../data/kana';
+import { buildGojuonGrid, HIRAGANA_LIST, KANJI_LIST, KATAKANA_LIST, VOWEL_HEADERS } from '../data/kana';
 import type { KanaCharacter, KanaScript } from '../types/kana';
+
+export function getUnlockedMaxIndex(
+  list: KanaCharacter[],
+  practicedChars: Set<string>
+): number {
+  const firstUnfinished = list.findIndex((item) => !practicedChars.has(item.char));
+  return firstUnfinished === -1 ? Math.max(0, list.length - 1) : firstUnfinished;
+}
 
 interface KanaChartProps {
   script: KanaScript;
@@ -18,6 +27,20 @@ export function KanaChart({
   practicedChars,
 }: KanaChartProps) {
   const isKanji = script === 'kanji';
+  const scriptList = useMemo(
+    () => (isKanji ? KANJI_LIST : script === 'katakana' ? KATAKANA_LIST : HIRAGANA_LIST),
+    [isKanji, script]
+  );
+  const unlockedMaxIdx = useMemo(
+    () => getUnlockedMaxIndex(scriptList, practicedChars),
+    [scriptList, practicedChars]
+  );
+  const indexByChar = useMemo(() => {
+    const map = new Map<string, number>();
+    scriptList.forEach((item, idx) => map.set(item.char, idx));
+    return map;
+  }, [scriptList]);
+
   const rows = useMemo(() => (isKanji ? [] : buildGojuonGrid(script)), [isKanji, script]);
   const { totalInScript, practicedInScript } = useMemo(() => {
     if (isKanji) {
@@ -75,10 +98,15 @@ export function KanaChart({
           </button>
         </div>
 
-        <div className="progress-meta" title="Characters practiced in this script">
-          <span>
-            {practicedInScript} / {totalInScript} practiced
-          </span>
+        <div className="progress-meta" title="Characters completed in this script">
+          <div className="progress-meta-row">
+            <span>
+              {practicedInScript} / {totalInScript} practiced
+            </span>
+            <span className="level-badge">
+              Stage {Math.min(unlockedMaxIdx + 1, totalInScript)}
+            </span>
+          </div>
           <div className="progress-track">
             <div
               className="progress-fill"
@@ -90,21 +118,27 @@ export function KanaChart({
 
       {isKanji ? (
         <div className="thai-grid-scroll">
-          {KANJI_LIST.map((item) => {
+          {KANJI_LIST.map((item, idx) => {
             const isSelected = item.char === selected.char;
             const isPracticed = practicedChars.has(item.char);
+            const isLocked = idx > unlockedMaxIdx;
             return (
               <button
                 key={item.char}
                 type="button"
-                className={`kana-cell ${isSelected ? 'is-selected' : ''} ${isPracticed ? 'is-practiced' : ''}`}
+                className={`kana-cell ${isSelected ? 'is-selected' : ''} ${isPracticed ? 'is-practiced' : ''} ${isLocked ? 'is-locked' : ''}`}
                 onClick={() => onSelect(item)}
                 aria-pressed={isSelected}
-                aria-label={`${item.char} (${item.romaji})`}
+                aria-disabled={isLocked}
+                aria-label={`${item.char} (${item.romaji})${isLocked ? ' — Locked' : ''}`}
               >
                 <span className="kana-glyph">{item.char}</span>
                 <span className="kana-romaji">{item.romaji}</span>
-                {isPracticed && <span className="practiced-dot" aria-hidden="true" />}
+                {isLocked ? (
+                  <Lock size={11} className="locked-icon" aria-hidden="true" />
+                ) : (
+                  isPracticed && <span className="practiced-dot" aria-hidden="true" />
+                )}
               </button>
             );
           })}
@@ -134,18 +168,25 @@ export function KanaChart({
                   }
                   const isSelected = item.char === selected.char;
                   const isPracticed = practicedChars.has(item.char);
+                  const idx = indexByChar.get(item.char) ?? 0;
+                  const isLocked = idx > unlockedMaxIdx;
                   return (
                     <button
                       key={item.char}
                       type="button"
-                      className={`kana-cell ${isSelected ? 'is-selected' : ''} ${isPracticed ? 'is-practiced' : ''}`}
+                      className={`kana-cell ${isSelected ? 'is-selected' : ''} ${isPracticed ? 'is-practiced' : ''} ${isLocked ? 'is-locked' : ''}`}
                       onClick={() => onSelect(item)}
                       aria-pressed={isSelected}
-                      aria-label={`${item.char} (${item.romaji})`}
+                      aria-disabled={isLocked}
+                      aria-label={`${item.char} (${item.romaji})${isLocked ? ' — Locked' : ''}`}
                     >
                       <span className="kana-glyph">{item.char}</span>
                       <span className="kana-romaji">{item.romaji}</span>
-                      {isPracticed && <span className="practiced-dot" aria-hidden="true" />}
+                      {isLocked ? (
+                        <Lock size={11} className="locked-icon" aria-hidden="true" />
+                      ) : (
+                        isPracticed && <span className="practiced-dot" aria-hidden="true" />
+                      )}
                     </button>
                   );
                 })}

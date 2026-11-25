@@ -1,16 +1,31 @@
-import { useMemo } from 'react';
-import { ArrowLeft, Award, BarChart3, CheckCircle2, Globe2, Target, Users } from 'lucide-react';
-import type { HindiScript, KanaScript, WritingLanguage } from '../types/kana';
+import { useMemo, useState } from 'react';
+import {
+  ArrowLeft,
+  Award,
+  BarChart3,
+  CheckCircle2,
+  Globe2,
+  RotateCcw,
+  Target,
+  Trash2,
+  Users,
+} from 'lucide-react';
+import type { HindiScript, KanaScript, StrokeDifficulty, WritingLanguage } from '../types/kana';
 import { computeUserStats } from '../utils/profileStats';
+import { DIFFICULTY_LABELS, DIFFICULTY_ORDER } from '../utils/strokeValidator';
 import type { LocalUserProfile } from '../utils/userStorage';
 
 interface ProfilePageProps {
   currentUser: LocalUserProfile;
   localUsers: LocalUserProfile[];
   activeBrowserUserIds: ReadonlySet<string>;
+  difficulty: StrokeDifficulty;
+  onDifficultyChange: (difficulty: StrokeDifficulty) => void;
   onBackToPractice: () => void;
   onPracticeScript: (language: WritingLanguage, script: KanaScript, hindiScript?: HindiScript) => void;
   onSwitchUser: (userName: string) => void;
+  onResetProfile: () => void;
+  onDeleteProfile: () => void;
 }
 
 function formatAccuracy(accuracyPct: number | null): string {
@@ -21,14 +36,22 @@ export function ProfilePage({
   currentUser,
   localUsers,
   activeBrowserUserIds,
+  difficulty,
+  onDifficultyChange,
   onBackToPractice,
   onPracticeScript,
   onSwitchUser,
+  onResetProfile,
+  onDeleteProfile,
 }: ProfilePageProps) {
-  const currentStats = useMemo(() => computeUserStats(currentUser), [currentUser]);
+  const [confirmAction, setConfirmAction] = useState<'reset' | 'delete' | null>(null);
+  const currentStats = useMemo(
+    () => computeUserStats(currentUser, difficulty),
+    [currentUser, difficulty]
+  );
   const allUserStats = useMemo(
-    () => localUsers.map((user) => computeUserStats(user)),
-    [localUsers]
+    () => localUsers.map((user) => computeUserStats(user, difficulty)),
+    [localUsers, difficulty]
   );
 
   return (
@@ -47,14 +70,63 @@ export function ProfilePage({
           </div>
         </div>
 
-        <button
-          type="button"
-          className="profile-back-btn"
-          onClick={onBackToPractice}
+        <div className="profile-hero-actions">
+          <button
+            type="button"
+            className="profile-action-btn is-warning"
+            onClick={() => setConfirmAction('reset')}
+          >
+            <RotateCcw size={14} />
+            <span>Reset Progress</span>
+          </button>
+
+          <button
+            type="button"
+            className="profile-action-btn is-danger"
+            onClick={() => setConfirmAction('delete')}
+          >
+            <Trash2 size={14} />
+            <span>Delete Profile</span>
+          </button>
+
+          <button
+            type="button"
+            className="profile-back-btn"
+            onClick={onBackToPractice}
+          >
+            <ArrowLeft size={15} />
+            <span>Back to Practice</span>
+          </button>
+        </div>
+      </section>
+
+      {/* Difficulty selector for performance logs */}
+      <section className="profile-difficulty-bar" aria-label="Filter performance by difficulty">
+        <span className="profile-difficulty-label">
+          Performance Logs ({DIFFICULTY_LABELS[difficulty]})
+        </span>
+        <div
+          className="difficulty-pills"
+          role="radiogroup"
+          aria-label="Select difficulty for performance logs"
+          data-testid="profile-difficulty-selector"
         >
-          <ArrowLeft size={15} />
-          <span>Back to Practice</span>
-        </button>
+          {DIFFICULTY_ORDER.map((diff) => {
+            const active = difficulty === diff;
+            return (
+              <button
+                key={diff}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                className={`diff-pill-btn is-${diff} ${active ? 'is-active' : ''}`}
+                onClick={() => onDifficultyChange(diff)}
+              >
+                {DIFFICULTY_LABELS[diff]}
+              </button>
+            );
+          })}
+        </div>
       </section>
 
       {/* Logged-in user key metrics */}
@@ -267,6 +339,62 @@ export function ProfilePage({
           </table>
         </div>
       </section>
+
+      {confirmAction && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={() => setConfirmAction(null)}
+        >
+          <div
+            className="success-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="profile-confirm-title"
+            data-testid="profile-confirm-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              className={confirmAction === 'delete' ? 'failure-modal-char' : 'locked-modal-char'}
+              aria-hidden="true"
+            >
+              {confirmAction === 'delete' ? <Trash2 size={24} /> : <RotateCcw size={24} />}
+            </div>
+            <h2 id="profile-confirm-title" className="success-modal-title">
+              {confirmAction === 'delete' ? 'Delete Profile?' : 'Reset Profile Progress?'}
+            </h2>
+            <p className="success-modal-body">
+              {confirmAction === 'delete'
+                ? `This will permanently delete "${currentUser.name}" and all their local progress from this browser.`
+                : `This will clear all practiced characters, accuracy stats, and unlocked stages for "${currentUser.name}".`}
+            </p>
+            <div className="success-modal-actions">
+              <button
+                type="button"
+                className="guide-secondary-btn success-modal-btn"
+                onClick={() => setConfirmAction(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className={`success-modal-btn ${confirmAction === 'delete' ? 'danger-confirm-btn' : 'guide-play-btn'}`}
+                onClick={() => {
+                  const action = confirmAction;
+                  setConfirmAction(null);
+                  if (action === 'delete') {
+                    onDeleteProfile();
+                  } else {
+                    onResetProfile();
+                  }
+                }}
+              >
+                {confirmAction === 'delete' ? 'Confirm Delete' : 'Confirm Reset'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

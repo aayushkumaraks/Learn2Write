@@ -1,4 +1,11 @@
-import type { DrawPoint, DrawnStroke, InkColorOption, PencilType, StrokeSize } from '../types/kana';
+import type {
+  DrawPoint,
+  DrawnStroke,
+  InkColorOption,
+  PencilType,
+  StrokeDifficulty,
+  StrokeSize,
+} from '../types/kana';
 
 export interface PencilPreset {
   id: PencilType;
@@ -187,4 +194,38 @@ export function renderAllStrokes(
   for (const stroke of strokes) {
     renderStroke(ctx, stroke, width, height);
   }
+}
+
+/**
+ * Smooths interior stroke points using weighted moving-average passes while
+ * preserving start and end points. Applied on Easy (stronger) and Medium (gentle).
+ */
+export function smoothStrokePoints(
+  points: DrawPoint[],
+  difficulty: StrokeDifficulty
+): DrawPoint[] {
+  const passes = difficulty === 'easy' ? 3 : difficulty === 'medium' ? 1 : 0;
+  if (passes === 0 || points.length < 3) {
+    return points;
+  }
+
+  let current = points;
+  for (let p = 0; p < passes; p++) {
+    const next: DrawPoint[] = [current[0]];
+    for (let i = 1; i < current.length - 1; i++) {
+      const prev = current[i - 1];
+      const curr = current[i];
+      const nxt = current[i + 1];
+      next.push({
+        x: 0.25 * prev.x + 0.5 * curr.x + 0.25 * nxt.x,
+        y: 0.25 * prev.y + 0.5 * curr.y + 0.25 * nxt.y,
+        t: curr.t,
+        pressure: 0.25 * prev.pressure + 0.5 * curr.pressure + 0.25 * nxt.pressure,
+      });
+    }
+    next.push(current[current.length - 1]);
+    current = next;
+  }
+
+  return current;
 }

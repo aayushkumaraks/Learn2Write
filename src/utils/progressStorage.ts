@@ -3,6 +3,7 @@ import type {
   HindiScript,
   KanaScript,
   PencilType,
+  StrokeDifficulty,
   StrokeSize,
   WritingLanguage,
 } from '../types/kana';
@@ -31,6 +32,7 @@ export interface PracticePreferences {
   showTrace: boolean;
   showNumbers: boolean;
   guideSpeed: 'slow' | 'normal';
+  difficulty: StrokeDifficulty;
 }
 
 export interface ResumePosition {
@@ -40,11 +42,17 @@ export interface ResumePosition {
   selectedChar: string;
 }
 
+export interface DifficultyProgressBucket {
+  practicedChars: string[];
+  characters: Record<string, CharacterProgress>;
+}
+
 export interface PersistedProgressData {
   version: 2;
   updatedAt: number;
   practicedChars: string[];
   characters: Record<string, CharacterProgress>;
+  byDifficulty?: Partial<Record<StrokeDifficulty, DifficultyProgressBucket>>;
   resume: ResumePosition;
   preferences: PracticePreferences;
 }
@@ -59,6 +67,12 @@ const VALID_HINDI_SCRIPTS: ReadonlySet<HindiScript> = new Set([
 const VALID_PENCILS: ReadonlySet<PencilType> = new Set(['pencil', 'brush', 'ballpoint', 'marker']);
 const VALID_SIZES: ReadonlySet<StrokeSize> = new Set(['fine', 'medium', 'bold']);
 const VALID_GRIDS: ReadonlySet<GridStyle> = new Set(['crosshair', 'quad', 'none']);
+const VALID_DIFFICULTIES: ReadonlySet<StrokeDifficulty> = new Set([
+  'easy',
+  'medium',
+  'strict',
+  'asian_parents',
+]);
 const VALID_INK_HEXES: ReadonlySet<string> = new Set(INK_COLORS.map((c) => c.hex));
 
 export const DEFAULT_PREFERENCES: PracticePreferences = {
@@ -69,6 +83,7 @@ export const DEFAULT_PREFERENCES: PracticePreferences = {
   showTrace: true,
   showNumbers: true,
   guideSpeed: 'normal',
+  difficulty: 'medium',
 };
 
 export const DEFAULT_RESUME: ResumePosition = {
@@ -182,12 +197,47 @@ export function sanitizeProgressData(raw: unknown): PersistedProgressData {
     rawPrefs.guideSpeed === 'slow' || rawPrefs.guideSpeed === 'normal'
       ? rawPrefs.guideSpeed
       : DEFAULT_PREFERENCES.guideSpeed;
+  const difficulty = VALID_DIFFICULTIES.has(rawPrefs.difficulty as StrokeDifficulty)
+    ? (rawPrefs.difficulty as StrokeDifficulty)
+    : DEFAULT_PREFERENCES.difficulty;
+
+  const rawByDiff = isRecord(raw.byDifficulty) ? raw.byDifficulty : {};
+  const byDifficulty: Partial<Record<StrokeDifficulty, DifficultyProgressBucket>> = {};
+  for (const diff of VALID_DIFFICULTIES) {
+    const rawBucket = rawByDiff[diff];
+    if (isRecord(rawBucket)) {
+      const bChars: Record<string, CharacterProgress> = {};
+      const bPracticed = new Set<string>();
+      if (Array.isArray(rawBucket.practicedChars)) {
+        for (const ch of rawBucket.practicedChars) {
+          if (typeof ch === 'string' && ch.length > 0) bPracticed.add(ch);
+        }
+      }
+      if (isRecord(rawBucket.characters)) {
+        for (const [ch, entry] of Object.entries(rawBucket.characters)) {
+          if (!ch || !isRecord(entry)) continue;
+          bPracticed.add(ch);
+          bChars[ch] = {
+            practicedCount: Math.max(1, toSafePositiveInt(entry.practicedCount, 1)),
+            matchedCount: toSafePositiveInt(entry.matchedCount, 0),
+            firstPracticedAt: toSafePositiveInt(entry.firstPracticedAt, 0),
+            lastPracticedAt: toSafePositiveInt(entry.lastPracticedAt, 0),
+          };
+        }
+      }
+      byDifficulty[diff] = {
+        practicedChars: Array.from(bPracticed),
+        characters: bChars,
+      };
+    }
+  }
 
   return {
     version: 2,
     updatedAt,
     practicedChars: Array.from(practicedSet),
     characters,
+    byDifficulty,
     resume: {
       language,
       script,
@@ -202,8 +252,24 @@ export function sanitizeProgressData(raw: unknown): PersistedProgressData {
       showTrace,
       showNumbers,
       guideSpeed,
+      difficulty,
     },
   };
+}
+
+export function getDifficultyBucket(
+  progress: PersistedProgressData,
+  difficulty: StrokeDifficulty
+): DifficultyProgressBucket {
+  const bucket = progress.byDifficulty?.[difficulty];
+  if (bucket) return bucket;
+  if (difficulty === 'medium') {
+    return {
+      practicedChars: progress.practicedChars,
+      characters: progress.characters,
+    };
+  }
+  return { practicedChars: [], characters: {} };
 }
 
 /**
@@ -252,6 +318,49 @@ export function mergeProgressData(
     }
   }
 
+  const mergedByDifficulty: Partial<Record<StrokeDifficulty, DifficultyProgressBucket>> = {};
+  for (const diff of VALID_DIFFICULTIES) {
+    const buckA = a.byDifficulty?.[diff];
+    const buckB = b.byDifficulty?.[diff];
+    if (!buckA && !buckB) continue;
+    const bPracticed = new Set<string>([
+      ...(buckA?.practicedChars ?? []),
+      ...(buckB?.practicedChars ?? []),
+    ]);
+    const bChars: Record<string, CharacterProgress> = {};
+    const bKeys = new Set<string>([
+      ...Object.keys(buckA?.characters ?? {}),
+      ...Object.keys(buckB?.characters ?? {}),
+      ...bPracticed,
+    ]);
+    for (const ch of bKeys) {
+      const eA = buckA?.characters[ch];
+      const eB = buckB?.characters[ch];
+      bPracticed.add(ch);
+      if (eA && eB) {
+        const fA = eA.firstPracticedAt || Number.MAX_SAFE_INTEGER;
+        const fB = eB.firstPracticedAt || Number.MAX_SAFE_INTEGER;
+        const fMin = Math.min(fA, fB);
+        bChars[ch] = {
+          practicedCount: Math.max(eA.practicedCount, eB.practicedCount),
+          matchedCount: Math.max(eA.matchedCount, eB.matchedCount),
+          firstPracticedAt: fMin === Number.MAX_SAFE_INTEGER ? 0 : fMin,
+          lastPracticedAt: Math.max(eA.lastPracticedAt, eB.lastPracticedAt),
+        };
+      } else if (eA) {
+        bChars[ch] = { ...eA };
+      } else if (eB) {
+        bChars[ch] = { ...eB };
+      } else {
+        bChars[ch] = { practicedCount: 1, matchedCount: 0, firstPracticedAt: 0, lastPracticedAt: 0 };
+      }
+    }
+    mergedByDifficulty[diff] = {
+      practicedChars: Array.from(bPracticed),
+      characters: bChars,
+    };
+  }
+
   const preferB = b.updatedAt > a.updatedAt;
   const newer = preferB ? b : a;
 
@@ -260,6 +369,7 @@ export function mergeProgressData(
     updatedAt: Math.max(a.updatedAt, b.updatedAt),
     practicedChars: Array.from(practicedSet),
     characters: mergedChars,
+    byDifficulty: mergedByDifficulty,
     resume: { ...newer.resume },
     preferences: { ...newer.preferences },
   };
@@ -268,30 +378,41 @@ export function mergeProgressData(
 export function recordCharacterPractice(
   current: PersistedProgressData,
   char: string,
-  options?: { matched?: boolean; now?: number }
+  options?: { matched?: boolean; now?: number; difficulty?: StrokeDifficulty }
 ): PersistedProgressData {
   if (!char) return current;
   const now = options?.now ?? Date.now();
-  const existing = current.characters[char];
+  const diff = options?.difficulty ?? current.preferences.difficulty ?? 'medium';
+  const currentBucket = getDifficultyBucket(current, diff);
+  const existing = currentBucket.characters[char];
   const practicedCount = (existing?.practicedCount ?? 0) + (options?.matched ? (existing ? 0 : 1) : 1);
   const matchedCount = (existing?.matchedCount ?? 0) + (options?.matched ? 1 : 0);
   const firstPracticedAt = existing?.firstPracticedAt ? existing.firstPracticedAt : now;
 
-  const practicedSet = new Set(current.practicedChars);
+  const practicedSet = new Set(currentBucket.practicedChars);
   practicedSet.add(char);
 
-  return {
-    ...current,
-    updatedAt: now,
+  const nextBucket: DifficultyProgressBucket = {
     practicedChars: Array.from(practicedSet),
     characters: {
-      ...current.characters,
+      ...currentBucket.characters,
       [char]: {
         practicedCount,
         matchedCount,
         firstPracticedAt,
         lastPracticedAt: now,
       },
+    },
+  };
+
+  return {
+    ...current,
+    updatedAt: now,
+    practicedChars: diff === 'medium' ? nextBucket.practicedChars : current.practicedChars,
+    characters: diff === 'medium' ? nextBucket.characters : current.characters,
+    byDifficulty: {
+      ...(current.byDifficulty ?? {}),
+      [diff]: nextBucket,
     },
   };
 }

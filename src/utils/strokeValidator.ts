@@ -1,4 +1,4 @@
-import type { DrawPoint, DrawnStroke, KanaCharacter } from '../types/kana';
+import type { DrawPoint, DrawnStroke, KanaCharacter, StrokeDifficulty } from '../types/kana';
 
 export interface Point2D {
   x: number;
@@ -12,13 +12,61 @@ export interface StrokeValidationResult {
   matchedStrokes: boolean[];
 }
 
+export const DIFFICULTY_ORDER: StrokeDifficulty[] = [
+  'easy',
+  'medium',
+  'strict',
+  'asian_parents',
+];
+
+export const DIFFICULTY_LABELS: Record<StrokeDifficulty, string> = {
+  easy: 'Easy',
+  medium: 'Medium',
+  strict: 'Strict',
+  asian_parents: 'Parents Oversight',
+};
+
+interface DifficultyThresholds {
+  maxAvgBidir: number;
+  maxDir: number;
+  maxOrdered: number;
+  maxPeak: number;
+  maxEndpoint: number;
+}
+
+const DIFFICULTY_THRESHOLDS: Record<StrokeDifficulty, DifficultyThresholds> = {
+  easy: {
+    maxAvgBidir: 14,
+    maxDir: 17,
+    maxOrdered: 20,
+    maxPeak: 28,
+    maxEndpoint: 24,
+  },
+  medium: {
+    maxAvgBidir: 10,
+    maxDir: 13,
+    maxOrdered: 15,
+    maxPeak: 21,
+    maxEndpoint: 18,
+  },
+  strict: {
+    maxAvgBidir: 6.5,
+    maxDir: 8.5,
+    maxOrdered: 10,
+    maxPeak: 14,
+    maxEndpoint: 13,
+  },
+  asian_parents: {
+    maxAvgBidir: 4.0,
+    maxDir: 5.5,
+    maxOrdered: 6.5,
+    maxPeak: 9.5,
+    maxEndpoint: 8.5,
+  },
+};
+
 const KANJIVG_SIZE = 109;
 const SAMPLE_COUNT = 24;
-
-// Thresholds in KanjiVG (0..109) coordinate units
-const MAX_AVG_BIDIR_DIST = 15;
-const MAX_DIR_DIST = 18;
-const MAX_ENDPOINT_DIST = 26;
 
 function dist2D(a: Point2D, b: Point2D): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
@@ -229,6 +277,30 @@ function meanNearestDistance(source: Point2D[], target: Point2D[]): number {
   return sum / source.length;
 }
 
+function maxNearestDistance(source: Point2D[], target: Point2D[]): number {
+  if (source.length === 0 || target.length === 0) return Infinity;
+  let maxD = 0;
+  for (const s of source) {
+    let minD = Infinity;
+    for (const t of target) {
+      const d = dist2D(s, t);
+      if (d < minD) minD = d;
+    }
+    if (minD > maxD) maxD = minD;
+  }
+  return maxD;
+}
+
+function meanOrderedDistance(user: Point2D[], ref: Point2D[]): number {
+  const len = Math.min(user.length, ref.length);
+  if (len === 0) return Infinity;
+  let sum = 0;
+  for (let i = 0; i < len; i++) {
+    sum += dist2D(user[i], ref[i]);
+  }
+  return sum / len;
+}
+
 function toKanjiVgPoints(points: DrawPoint[]): Point2D[] {
   return points.map((p) => ({
     x: p.x * KANJIVG_SIZE,
@@ -236,28 +308,40 @@ function toKanjiVgPoints(points: DrawPoint[]): Point2D[] {
   }));
 }
 
-function validateSingleStroke(userStroke: DrawnStroke, refSvgPath: string): boolean {
+function validateSingleStroke(
+  userStroke: DrawnStroke,
+  refSvgPath: string,
+  difficulty: StrokeDifficulty
+): boolean {
   const rawUser = toKanjiVgPoints(userStroke.points);
   const rawRef = parseSvgPathToPolyline(refSvgPath);
   if (rawUser.length === 0 || rawRef.length === 0) return false;
 
+  const thresholds = DIFFICULTY_THRESHOLDS[difficulty];
   const user = resamplePolyline(rawUser, SAMPLE_COUNT);
   const ref = resamplePolyline(rawRef, SAMPLE_COUNT);
 
   const startDist = dist2D(user[0], ref[0]);
   const endDist = dist2D(user[user.length - 1], ref[ref.length - 1]);
-  if (startDist > MAX_ENDPOINT_DIST || endDist > MAX_ENDPOINT_DIST) {
+  if (startDist > thresholds.maxEndpoint || endDist > thresholds.maxEndpoint) {
     return false;
   }
 
   const userToRef = meanNearestDistance(user, ref);
   const refToUser = meanNearestDistance(ref, user);
   const avgBidir = (userToRef + refToUser) / 2;
+  const orderedDist = meanOrderedDistance(user, ref);
+  const peakDist = Math.max(
+    maxNearestDistance(user, ref),
+    maxNearestDistance(ref, user)
+  );
 
   return (
-    avgBidir <= MAX_AVG_BIDIR_DIST &&
-    userToRef <= MAX_DIR_DIST &&
-    refToUser <= MAX_DIR_DIST
+    avgBidir <= thresholds.maxAvgBidir &&
+    userToRef <= thresholds.maxDir &&
+    refToUser <= thresholds.maxDir &&
+    orderedDist <= thresholds.maxOrdered &&
+    peakDist <= thresholds.maxPeak
   );
 }
 
@@ -407,7 +491,8 @@ export function validateAgainstFontGlyph(
  */
 export function validateDrawnCharacter(
   strokes: DrawnStroke[],
-  character: KanaCharacter
+  character: KanaCharacter,
+  difficulty: StrokeDifficulty = 'medium'
 ): StrokeValidationResult {
   const expectedCount = character.strokes.length;
 
@@ -426,7 +511,7 @@ export function validateDrawnCharacter(
 
   if (strokes.length < expectedCount) {
     const matchedStrokes = strokes.map((s, idx) =>
-      validateSingleStroke(s, character.strokes[idx])
+      validateSingleStroke(s, character.strokes[idx], difficulty)
     );
     return {
       status: 'in-progress',
@@ -446,7 +531,7 @@ export function validateDrawnCharacter(
   }
 
   const matchedStrokes = character.strokes.map((refPath, idx) =>
-    validateSingleStroke(strokes[idx], refPath)
+    validateSingleStroke(strokes[idx], refPath, difficulty)
   );
   const isMatch = matchedStrokes.every(Boolean);
 

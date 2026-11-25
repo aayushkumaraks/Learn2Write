@@ -12,6 +12,8 @@ export type GridStyle = 'crosshair' | 'quad' | 'none';
 
 export type InputMode = 'touch' | 'mouse';
 
+export type StrokeDifficulty = 'easy' | 'medium' | 'strict' | 'asian_parents';
+
 export interface StrokeNumberPos {
   x: number;
   y: number;

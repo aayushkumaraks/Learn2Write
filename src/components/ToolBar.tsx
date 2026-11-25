@@ -1,11 +1,14 @@
 import {
+  ChevronDown,
+  ChevronUp,
   Eraser,
   Eye,
   EyeOff,
   Grid2x2,
   Undo2,
 } from 'lucide-react';
-import type { GridStyle } from '../types/kana';
+import type { GridStyle, StrokeDifficulty } from '../types/kana';
+import { DIFFICULTY_LABELS, DIFFICULTY_ORDER } from '../utils/strokeValidator';
 
 interface ToolBarProps {
   gridStyle: GridStyle;
@@ -14,6 +17,8 @@ interface ToolBarProps {
   onToggleTrace: () => void;
   showNumbers: boolean;
   onToggleNumbers: () => void;
+  difficulty: StrokeDifficulty;
+  onDifficultyChange: (difficulty: StrokeDifficulty) => void;
   canUndo: boolean;
   onUndo: () => void;
   onClear: () => void;
@@ -32,10 +37,16 @@ export function ToolBar({
   onToggleTrace,
   showNumbers,
   onToggleNumbers,
+  difficulty,
+  onDifficultyChange,
   canUndo,
   onUndo,
   onClear,
 }: ToolBarProps) {
+  const diffIdx = DIFFICULTY_ORDER.indexOf(difficulty);
+  const canLevelDown = diffIdx > 0;
+  const canLevelUp = diffIdx < DIFFICULTY_ORDER.length - 1;
+
   return (
     <div className="toolbar" role="region" aria-label="Canvas controls">
       <div className="tool-actions">
@@ -87,6 +98,38 @@ export function ToolBar({
           <Eraser size={15} />
           <span>Clear</span>
         </button>
+      </div>
+
+      <div className="difficulty-bar">
+        <span className="difficulty-title">Strictness</span>
+        <div className="difficulty-stepper" role="group" aria-label="Stroke strictness difficulty">
+          <button
+            type="button"
+            className="diff-step-btn"
+            onClick={() => canLevelDown && onDifficultyChange(DIFFICULTY_ORDER[diffIdx - 1])}
+            disabled={!canLevelDown}
+            aria-label="Level down stroke difficulty"
+            title="Decrease strictness"
+          >
+            <ChevronDown size={14} />
+          </button>
+          <span
+            className={`difficulty-value is-${difficulty}`}
+            data-testid="difficulty-label"
+          >
+            {DIFFICULTY_LABELS[difficulty]}
+          </span>
+          <button
+            type="button"
+            className="diff-step-btn"
+            onClick={() => canLevelUp && onDifficultyChange(DIFFICULTY_ORDER[diffIdx + 1])}
+            disabled={!canLevelUp}
+            aria-label="Level up stroke difficulty"
+            title="Increase strictness"
+          >
+            <ChevronUp size={14} />
+          </button>
+        </div>
       </div>
     </div>
   );

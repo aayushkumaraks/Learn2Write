@@ -4,6 +4,7 @@ import {
   ChevronRight,
   Gauge,
   Hand,
+  Lock,
   MousePointer2,
   Pause,
   PenTool,
@@ -12,7 +13,7 @@ import {
   User,
 } from 'lucide-react';
 import { HindiChart } from './components/HindiChart';
-import { KanaChart } from './components/KanaChart';
+import { getUnlockedMaxIndex, KanaChart } from './components/KanaChart';
 import { LocalUsersBar } from './components/LocalUsersBar';
 import { ProfilePage } from './components/ProfilePage';
 import { ScriptGridPanel } from './components/ScriptGridPanel';
@@ -36,18 +37,21 @@ import type {
   KanaCharacter,
   KanaScript,
   PencilType,
+  StrokeDifficulty,
   StrokeSize,
   WritingLanguage,
 } from './types/kana';
 import {
   createDefaultProgressData,
+  getDifficultyBucket,
   recordCharacterPractice,
   type PersistedProgressData,
   type PracticePreferences,
 } from './utils/progressStorage';
-import { validateDrawnCharacter } from './utils/strokeValidator';
+import { DIFFICULTY_LABELS, validateDrawnCharacter } from './utils/strokeValidator';
 import {
   createTabId,
+  deleteUserFromStore,
   getActiveBrowserUserIds,
   getSortedLocalUsers,
   getTabUserId,
@@ -58,6 +62,7 @@ import {
   logoutUsersStore,
   mergeUsersStore,
   removeTabSession,
+  resetUserProgressInStore,
   saveUsersStore,
   setTabUserId,
   subscribeToActiveSessions,
@@ -119,11 +124,12 @@ export function App() {
   const language: WritingLanguage = ENABLED_LANGUAGES.has(progress.resume.language)
     ? progress.resume.language
     : 'japanese';
-  const { pencil, strokeSize, inkColor, gridStyle, showTrace, showNumbers, guideSpeed } =
+  const { pencil, strokeSize, inkColor, gridStyle, showTrace, showNumbers, guideSpeed, difficulty } =
     progress.preferences;
 
   const [isToolDockOpen, setIsToolDockOpen] = useState<boolean>(() => !isSmallViewport());
   const [activeView, setActiveView] = useState<'practice' | 'profile'>('practice');
+  const [loginDifficulty, setLoginDifficulty] = useState<StrokeDifficulty>('medium');
 
   // Canvas strokes (ephemeral per active attempt)
   const [strokes, setStrokes] = useState<DrawnStroke[]>([]);
@@ -133,6 +139,16 @@ export function App() {
   const [guidePlayNonce, setGuidePlayNonce] = useState<number>(0);
   const [focusedStroke, setFocusedStroke] = useState<number | null>(null);
   const [activeGuideStroke, setActiveGuideStroke] = useState<number | null>(null);
+
+  // Success celebration animation (every match) & one-time modals
+  const [successAnimNonce, setSuccessAnimNonce] = useState<number>(0);
+  const [showSuccessModal, setShowSuccessModal] = useState<boolean>(false);
+  const [showFailureModal, setShowFailureModal] = useState<boolean>(false);
+  const [lockedModalInfo, setLockedModalInfo] = useState<{
+    target: KanaCharacter;
+    blocker: KanaCharacter;
+  } | null>(null);
+  const shownSuccessModalCharsRef = useRef<Set<string>>(new Set());
 
   // Offline/online status indicator (app works 100% offline in both states)
   const [isOffline, setIsOffline] = useState<boolean>(() =>
@@ -149,19 +165,30 @@ export function App() {
     return getKanaList(script);
   }, [language, script, hindiScript]);
 
-  const selected = useMemo(
-    () => currentList.find((item) => item.char === selectedChar) ?? currentList[0],
-    [currentList, selectedChar]
+  const activeBucket = useMemo(
+    () => getDifficultyBucket(progress, difficulty),
+    [progress, difficulty]
   );
+
+  const practicedChars = useMemo(
+    () => new Set(activeBucket.practicedChars),
+    [activeBucket.practicedChars]
+  );
+
+  const unlockedMaxIdx = useMemo(
+    () => getUnlockedMaxIndex(currentList, practicedChars),
+    [currentList, practicedChars]
+  );
+
+  const selected = useMemo(() => {
+    const idx = currentList.findIndex((item) => item.char === selectedChar);
+    if (idx === -1) return currentList[0];
+    return currentList[Math.min(idx, unlockedMaxIdx)];
+  }, [currentList, selectedChar, unlockedMaxIdx]);
 
   const currentIndex = useMemo(
     () => Math.max(0, currentList.findIndex((item) => item.char === selected.char)),
     [currentList, selected]
-  );
-
-  const practicedChars = useMemo(
-    () => new Set(progress.practicedChars),
-    [progress.practicedChars]
   );
 
   const localUsers = useMemo(
@@ -170,8 +197,8 @@ export function App() {
   );
 
   const validation = useMemo(
-    () => validateDrawnCharacter(strokes, selected),
-    [strokes, selected]
+    () => validateDrawnCharacter(strokes, selected, difficulty),
+    [strokes, selected, difficulty]
   );
 
   // Persist users store to both localStorage and IndexedDB
@@ -274,27 +301,62 @@ export function App() {
     []
   );
 
-  // Record a matched validation once per completed drawing attempt
+  // Record a matched validation once per completed drawing attempt,
+  // and show failure modal on mismatch until the user succeeds at least once.
   const matchedAttemptCharRef = useRef<string | null>(null);
+  const mismatchedAttemptRef = useRef<boolean>(false);
   useEffect(() => {
     if (!currentUser) return;
     if (strokes.length === 0) {
       matchedAttemptCharRef.current = null;
+      mismatchedAttemptRef.current = false;
       return;
     }
+
+    const hasSucceededOnce =
+      shownSuccessModalCharsRef.current.has(selected.char) ||
+      (activeBucket.characters[selected.char]?.matchedCount ?? 0) > 0;
+
     if (validation.status === 'matched' && matchedAttemptCharRef.current !== selected.char) {
       matchedAttemptCharRef.current = selected.char;
+      mismatchedAttemptRef.current = false;
+      setShowFailureModal(false);
+      setSuccessAnimNonce((n) => n + 1);
+      if (!hasSucceededOnce) {
+        shownSuccessModalCharsRef.current.add(selected.char);
+        setShowSuccessModal(true);
+      }
       updateCurrentUserProgress((prev) =>
         recordCharacterPractice(prev, selected.char, {
           matched: true,
+          difficulty,
           now: nextTimestamp(prev.updatedAt),
         })
       );
+    } else if (validation.status === 'mismatch' && !mismatchedAttemptRef.current) {
+      mismatchedAttemptRef.current = true;
+      if (!hasSucceededOnce) {
+        setShowFailureModal(true);
+      }
+    } else if (validation.status !== 'mismatch') {
+      mismatchedAttemptRef.current = false;
     }
-  }, [currentUser, validation.status, strokes.length, selected.char, updateCurrentUserProgress]);
+  }, [
+    currentUser,
+    validation.status,
+    strokes.length,
+    selected.char,
+    activeBucket.characters,
+    difficulty,
+    updateCurrentUserProgress,
+  ]);
 
   const resetCanvasForCharacter = useCallback(() => {
     matchedAttemptCharRef.current = null;
+    mismatchedAttemptRef.current = false;
+    setShowSuccessModal(false);
+    setShowFailureModal(false);
+    setLockedModalInfo(null);
     setStrokes([]);
     setFocusedStroke(null);
     setIsGuidePlaying(true);
@@ -302,11 +364,23 @@ export function App() {
   }, []);
 
   const handleLogin = useCallback(
-    (rawName: string) => {
+    (rawName: string, chosenDifficulty?: StrokeDifficulty) => {
       const result = loginWithUserName(usersStoreRef.current, rawName);
       if (!result) return;
-      saveUsersStore(result.store);
-      setUsersStore(result.store);
+      shownSuccessModalCharsRef.current.clear();
+      let nextStore = result.store;
+      if (chosenDifficulty) {
+        nextStore = updateUserProgressInStore(nextStore, result.user.id, (prev) => ({
+          ...prev,
+          updatedAt: nextTimestamp(prev.updatedAt),
+          preferences: {
+            ...prev.preferences,
+            difficulty: chosenDifficulty,
+          },
+        }));
+      }
+      saveUsersStore(nextStore);
+      setUsersStore(nextStore);
       setCurrentUserId(result.user.id);
       resetCanvasForCharacter();
     },
@@ -316,7 +390,39 @@ export function App() {
   const handleLogout = useCallback(() => {
     removeTabSession(tabIdRef.current);
     setTabUserId(null);
+    shownSuccessModalCharsRef.current.clear();
+    setShowSuccessModal(false);
+    setShowFailureModal(false);
     const nextStore = logoutUsersStore(usersStoreRef.current);
+    saveUsersStore(nextStore);
+    setUsersStore(nextStore);
+    setCurrentUserId(null);
+    setActiveView('practice');
+    setActiveBrowserUserIds(getActiveBrowserUserIds());
+    matchedAttemptCharRef.current = null;
+    setStrokes([]);
+  }, []);
+
+  const handleResetCurrentProfile = useCallback(() => {
+    const uid = currentUserIdRef.current;
+    if (!uid) return;
+    shownSuccessModalCharsRef.current.clear();
+    const nextStore = resetUserProgressInStore(usersStoreRef.current, uid);
+    saveUsersStore(nextStore);
+    setUsersStore(nextStore);
+    resetCanvasForCharacter();
+  }, [resetCanvasForCharacter]);
+
+  const handleDeleteCurrentProfile = useCallback(() => {
+    const uid = currentUserIdRef.current;
+    if (!uid) return;
+    removeTabSession(tabIdRef.current);
+    setTabUserId(null);
+    shownSuccessModalCharsRef.current.clear();
+    setShowSuccessModal(false);
+    setShowFailureModal(false);
+    setLockedModalInfo(null);
+    const nextStore = deleteUserFromStore(usersStoreRef.current, uid);
     saveUsersStore(nextStore);
     setUsersStore(nextStore);
     setCurrentUserId(null);
@@ -374,6 +480,13 @@ export function App() {
 
   const selectCharacter = useCallback(
     (kana: KanaCharacter) => {
+      const targetIdx = currentList.findIndex((item) => item.char === kana.char);
+      if (targetIdx > unlockedMaxIdx) {
+        const blocker = currentList[unlockedMaxIdx];
+        setLockedModalInfo({ target: kana, blocker });
+        return;
+      }
+      setLockedModalInfo(null);
       updateCurrentUserProgress((prev) => ({
         ...prev,
         updatedAt: nextTimestamp(prev.updatedAt),
@@ -384,7 +497,7 @@ export function App() {
       }));
       resetCanvasForCharacter();
     },
-    [updateCurrentUserProgress, resetCanvasForCharacter]
+    [currentList, unlockedMaxIdx, updateCurrentUserProgress, resetCanvasForCharacter]
   );
 
   const handleLanguageChange = useCallback(
@@ -440,28 +553,44 @@ export function App() {
     (nextScript: KanaScript) => {
       if (nextScript === script) return;
       const nextList = getKanaList(nextScript);
-      // Try to match the same romaji in the other script (e.g. あ -> ア)
-      const match = nextList.find((item) => item.romaji === selected.romaji) ?? nextList[0];
+      const nextUnlockedMax = getUnlockedMaxIndex(nextList, practicedChars);
+      // Try to match the same romaji if already unlocked, otherwise jump to the current frontier
+      const matchIdx = nextList.findIndex((item) => item.romaji === selected.romaji);
+      const target =
+        matchIdx !== -1 && matchIdx <= nextUnlockedMax
+          ? nextList[matchIdx]
+          : nextList[nextUnlockedMax];
+      setLockedModalInfo(null);
       updateCurrentUserProgress((prev) => ({
         ...prev,
         updatedAt: nextTimestamp(prev.updatedAt),
         resume: {
           ...prev.resume,
           script: nextScript,
-          selectedChar: match.char,
+          selectedChar: target.char,
         },
       }));
       resetCanvasForCharacter();
     },
-    [script, selected.romaji, updateCurrentUserProgress, resetCanvasForCharacter]
+    [script, selected.romaji, practicedChars, updateCurrentUserProgress, resetCanvasForCharacter]
   );
 
   const handleStepCharacter = useCallback(
     (delta: number) => {
-      const nextIdx = (currentIndex + delta + currentList.length) % currentList.length;
+      const nextIdx = currentIndex + delta;
+      if (nextIdx < 0) {
+        selectCharacter(currentList[unlockedMaxIdx]);
+        return;
+      }
+      if (nextIdx > unlockedMaxIdx) {
+        const blocker = currentList[unlockedMaxIdx];
+        const target = currentList[nextIdx] ?? currentList[currentList.length - 1];
+        setLockedModalInfo({ target, blocker });
+        return;
+      }
       selectCharacter(currentList[nextIdx]);
     },
-    [currentIndex, currentList, selectCharacter]
+    [currentIndex, currentList, unlockedMaxIdx, selectCharacter]
   );
 
   const handleReplayGuide = useCallback(() => {
@@ -538,6 +667,13 @@ export function App() {
     }));
   }, [updatePreferences]);
 
+  const handleDifficultyChange = useCallback(
+    (nextDifficulty: StrokeDifficulty) => {
+      updatePreferences((prev) => ({ ...prev, difficulty: nextDifficulty }));
+    },
+    [updatePreferences]
+  );
+
   const handleUndo = useCallback(() => {
     setStrokes((prev) => prev.slice(0, -1));
   }, []);
@@ -551,6 +687,7 @@ export function App() {
     (char: string) => {
       updateCurrentUserProgress((prev) =>
         recordCharacterPractice(prev, char, {
+          difficulty: prev.preferences.difficulty,
           now: nextTimestamp(prev.updatedAt),
         })
       );
@@ -607,7 +744,9 @@ export function App() {
         localUsers={localUsers}
         activeBrowserUserIds={activeBrowserUserIds}
         totalCharacters={TOTAL_CHARACTER_COUNT}
-        onLogin={handleLogin}
+        difficulty={loginDifficulty}
+        onDifficultyChange={setLoginDifficulty}
+        onLogin={(name) => handleLogin(name, loginDifficulty)}
       />
     );
   }
@@ -639,18 +778,38 @@ export function App() {
               className={`view-nav-btn ${activeView === 'practice' ? 'is-active' : ''}`}
               onClick={() => setActiveView('practice')}
               aria-current={activeView === 'practice' ? 'page' : undefined}
+              title={`Practice (${DIFFICULTY_LABELS[difficulty]})`}
             >
               <PenTool size={14} />
               <span>Practice</span>
+              {activeView === 'practice' && (
+                <span
+                  className={`nav-diff-badge is-${difficulty}`}
+                  aria-hidden="true"
+                  data-testid="practice-tab-difficulty"
+                >
+                  {DIFFICULTY_LABELS[difficulty]}
+                </span>
+              )}
             </button>
             <button
               type="button"
               className={`view-nav-btn ${activeView === 'profile' ? 'is-active' : ''}`}
               onClick={() => setActiveView('profile')}
               aria-current={activeView === 'profile' ? 'page' : undefined}
+              title={`Profile (${DIFFICULTY_LABELS[difficulty]})`}
             >
               <User size={14} />
               <span>Profile</span>
+              {activeView === 'profile' && (
+                <span
+                  className={`nav-diff-badge is-${difficulty}`}
+                  aria-hidden="true"
+                  data-testid="profile-tab-difficulty"
+                >
+                  {DIFFICULTY_LABELS[difficulty]}
+                </span>
+              )}
             </button>
           </nav>
 
@@ -707,9 +866,13 @@ export function App() {
           currentUser={currentUser}
           localUsers={localUsers}
           activeBrowserUserIds={activeBrowserUserIds}
+          difficulty={difficulty}
+          onDifficultyChange={handleDifficultyChange}
           onBackToPractice={() => setActiveView('practice')}
           onPracticeScript={handlePracticeScript}
           onSwitchUser={handleLogin}
+          onResetProfile={handleResetCurrentProfile}
+          onDeleteProfile={handleDeleteCurrentProfile}
         />
       ) : (
         <main className="workspace">
@@ -868,8 +1031,12 @@ export function App() {
             showNumbers={showNumbers}
             inputMode={activeInputMode}
             strokes={strokes}
+            difficulty={difficulty}
             validationStatus={validation.status}
+            successAnimNonce={successAnimNonce}
             onStrokesChange={setStrokes}
+            onUndo={handleUndo}
+            onClear={handleClear}
             onUserPracticed={handleUserPracticed}
             isGuidePlaying={isGuidePlaying}
             guidePlayNonce={guidePlayNonce}
@@ -887,6 +1054,8 @@ export function App() {
             onToggleTrace={handleToggleTrace}
             showNumbers={showNumbers}
             onToggleNumbers={handleToggleNumbers}
+            difficulty={difficulty}
+            onDifficultyChange={handleDifficultyChange}
             canUndo={strokes.length > 0}
             onUndo={handleUndo}
             onClear={handleClear}
@@ -922,6 +1091,160 @@ export function App() {
           />
         )}
       </main>
+      )}
+
+      {showSuccessModal && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={() => setShowSuccessModal(false)}
+        >
+          <div
+            className="modal-confetti-layer"
+            aria-hidden="true"
+            data-testid="modal-confetti"
+          >
+            {Array.from({ length: 18 }, (_, idx) => (
+              <span key={idx} className={`confetti-piece c${(idx % 18) + 1}`} />
+            ))}
+          </div>
+
+          <div
+            className="success-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="success-modal-title"
+            data-testid="success-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="success-modal-char" aria-hidden="true">
+              {selected.char}
+            </div>
+            <h2 id="success-modal-title" className="success-modal-title">
+              Great job!
+            </h2>
+            <p className="success-modal-body">
+              You matched <strong>{selected.char}</strong> ({selected.romaji}). Would you like to
+              keep practicing this character or move forward?
+            </p>
+            <div className="success-modal-actions">
+              <button
+                type="button"
+                className="guide-secondary-btn success-modal-btn"
+                onClick={() => {
+                  setShowSuccessModal(false);
+                  handleClear();
+                }}
+              >
+                Keep Practicing
+              </button>
+              <button
+                type="button"
+                className="guide-play-btn success-modal-btn"
+                onClick={() => {
+                  setShowSuccessModal(false);
+                  handleStepCharacter(1);
+                }}
+              >
+                Move Forward
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showFailureModal && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={() => {
+            setShowFailureModal(false);
+            handleClear();
+          }}
+        >
+          <div
+            className="success-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="failure-modal-title"
+            data-testid="failure-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="failure-modal-char" aria-hidden="true">
+              {selected.char}
+            </div>
+            <h2 id="failure-modal-title" className="success-modal-title">
+              Not quite right
+            </h2>
+            <p className="success-modal-body">
+              Your strokes for <strong>{selected.char}</strong> ({selected.romaji}) did not match
+              the guide. Try following the stroke order and try again.
+            </p>
+            <div className="success-modal-actions">
+              <button
+                type="button"
+                className="guide-play-btn success-modal-btn"
+                onClick={() => {
+                  setShowFailureModal(false);
+                  handleClear();
+                }}
+              >
+                Retry
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {lockedModalInfo && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={() => setLockedModalInfo(null)}
+        >
+          <div
+            className="success-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="locked-modal-title"
+            data-testid="locked-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="locked-modal-char" aria-hidden="true">
+              <Lock size={22} />
+              <span>{lockedModalInfo.target.char}</span>
+            </div>
+            <h2 id="locked-modal-title" className="success-modal-title">
+              Character Locked
+            </h2>
+            <p className="success-modal-body">
+              To practice <strong>{lockedModalInfo.target.char}</strong> (
+              {lockedModalInfo.target.romaji}), finish{' '}
+              <strong>{lockedModalInfo.blocker.char}</strong> ({lockedModalInfo.blocker.romaji})
+              first to unlock it!
+            </p>
+            <div className="success-modal-actions">
+              <button
+                type="button"
+                className="guide-secondary-btn success-modal-btn"
+                onClick={() => setLockedModalInfo(null)}
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                className="guide-play-btn success-modal-btn"
+                onClick={() => {
+                  const blocker = lockedModalInfo.blocker;
+                  setLockedModalInfo(null);
+                  selectCharacter(blocker);
+                }}
+              >
+                Practice {lockedModalInfo.blocker.char}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       <footer className="app-footer">
