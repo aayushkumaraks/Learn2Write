@@ -30,16 +30,47 @@ export async function requestPersistentStorage(): Promise<StoragePersistenceStat
  * Registers the build-generated offline service worker so the entire SPA shell
  * and all bundled stroke datasets remain available completely offline.
  */
-export function registerOfflineServiceWorker(): void {
-  if (!import.meta.env.PROD) return;
+export function registerOfflineServiceWorker(options?: {
+  force?: boolean;
+  onReload?: () => void;
+}): void {
+  if (!options?.force && !import.meta.env.PROD) return;
   if (typeof window === 'undefined' || typeof navigator === 'undefined') return;
   if (!('serviceWorker' in navigator)) return;
   if (window.location.protocol !== 'https:' && window.location.protocol !== 'http:') return;
 
+  const hadController = Boolean(navigator.serviceWorker.controller);
+  let refreshing = false;
+
+  const handleControllerChange = () => {
+    if (!hadController || refreshing) return;
+    refreshing = true;
+    if (options?.onReload) {
+      options.onReload();
+    } else {
+      window.location.reload();
+    }
+  };
+
+  navigator.serviceWorker.addEventListener('controllerchange', handleControllerChange);
+
   const register = () => {
-    navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(() => {
-      // App remains fully functional even if service worker registration is blocked
-    });
+    navigator.serviceWorker
+      .register('./sw.js', { scope: './', updateViaCache: 'none' })
+      .then((registration) => {
+        const checkForUpdate = () => {
+          void registration.update().catch(() => {});
+        };
+        window.addEventListener('online', checkForUpdate);
+        document.addEventListener('visibilitychange', () => {
+          if (document.visibilityState === 'visible') {
+            checkForUpdate();
+          }
+        });
+      })
+      .catch(() => {
+        // App remains fully functional even if service worker registration is blocked
+      });
   };
 
   if (document.readyState === 'complete') {

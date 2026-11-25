@@ -92,6 +92,20 @@ self.addEventListener('fetch', (event) => {
 
   event.respondWith(
     caches.open(CACHE_NAME).then(async (cache) => {
+      if (request.mode === 'navigate') {
+        try {
+          const networkResponse = await fetch(request);
+          if (networkResponse && networkResponse.ok && networkResponse.type === 'basic') {
+            cache.put(request, networkResponse.clone());
+            return networkResponse;
+          }
+        } catch {
+          // Offline: fall back to cached shell below
+        }
+        const cachedNav = (await cache.match(request)) || (await cache.match(toScopeUrl('./index.html')));
+        return cachedNav || new Response('Offline', { status: 503, statusText: 'Offline' });
+      }
+
       const cached = await cache.match(request);
       if (cached) return cached;
 
@@ -102,10 +116,6 @@ self.addEventListener('fetch', (event) => {
         }
         return networkResponse;
       } catch {
-        if (request.mode === 'navigate') {
-          const shell = await cache.match(toScopeUrl('./index.html'));
-          if (shell) return shell;
-        }
         return new Response('Offline', { status: 503, statusText: 'Offline' });
       }
     })

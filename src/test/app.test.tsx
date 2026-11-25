@@ -11,7 +11,7 @@ import { THAI_CONSONANTS_LIST } from '../data/thai';
 import { HIRAGANA_LIST, KANJI_LIST, KATAKANA_LIST } from '../data/kana';
 import { detectTouchCapability } from '../hooks/useTouchDetection';
 import { WritingCanvas } from '../components/WritingCanvas';
-import { requestPersistentStorage } from '../utils/offline';
+import { registerOfflineServiceWorker, requestPersistentStorage } from '../utils/offline';
 import { renderAllStrokes, smoothStrokePoints } from '../utils/pencilEngine';
 import {
   LEGACY_PRACTICED_STORAGE_KEY,
@@ -1117,6 +1117,44 @@ describe('Offline SPA and durable browser progress storage', () => {
     // Switching back to Strict shows 1 practiced
     fireEvent.click(profileDiff.querySelector('button:nth-child(3)')!); // Strict
     expect(screen.getByTestId('profile-kpi-progress')).toHaveTextContent('1 /');
+  });
+
+  it('registers service worker with updateViaCache none and reloads when upgrading an existing controller', async () => {
+    const listeners: Record<string, Array<() => void>> = {};
+    const register = vi.fn().mockResolvedValue({ update: vi.fn().mockResolvedValue(undefined) });
+    const originalSW = navigator.serviceWorker;
+
+    Object.defineProperty(navigator, 'serviceWorker', {
+      configurable: true,
+      value: {
+        controller: {},
+        register,
+        addEventListener: (ev: string, cb: () => void) => {
+          listeners[ev] = listeners[ev] ?? [];
+          listeners[ev].push(cb);
+        },
+      },
+    });
+
+    const onReload = vi.fn();
+    try {
+      registerOfflineServiceWorker({ force: true, onReload });
+      expect(register).toHaveBeenCalledWith('./sw.js', {
+        scope: './',
+        updateViaCache: 'none',
+      });
+      expect(onReload).not.toHaveBeenCalled();
+
+      // Simulate new SW taking control -> triggers reload once
+      for (const cb of listeners.controllerchange ?? []) cb();
+      for (const cb of listeners.controllerchange ?? []) cb();
+      expect(onReload).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.defineProperty(navigator, 'serviceWorker', {
+        configurable: true,
+        value: originalSW,
+      });
+    }
   });
 
   it('auto-smooths strokes in Easy and Medium difficulty while leaving Strict and Parents Oversight raw', () => {
